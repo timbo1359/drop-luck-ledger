@@ -44,14 +44,16 @@ public class HistorySourcesTest
 	@Test
 	public void readsTheKillCountsChatCommandsSaved()
 	{
-		game.save("killcount", "zulrah", "1500").save("killcount", "chambers of xeric challenge mode", "42").save("killcount", "k'ril tsutsaroth", "300");
+		game.save("killcount", "zulrah", "1500").save("killcount", "corrupted gauntlet", "42").save("killcount", "k'ril tsutsaroth", "300")
+			.save("killcount", "chambers of xeric", "70");
 		HistoryInput in = collect();
 		assertEquals(1500, kc(in, "zulrah"));
-		assertEquals(42, kc(in, "chambers of xeric challenge mode"));
+		assertEquals(42, kc(in, "corrupted gauntlet"));
 		assertTrue(in.sources.contains(HistorySources.SRC_KC));
 		HistoryPlanner.Plan plan = new HistoryPlanner(ledger, index).plan(in);
 		assertEquals(3, plan.kc.size());
-		assertTrue(plan.kcSkipped.isEmpty());
+		// a boss the plugin leaves out is not used
+		assertEquals(java.util.Collections.singletonList("chambers of xeric 70"), plan.kcSkipped);
 	}
 
 	@Test
@@ -95,12 +97,12 @@ public class HistorySourcesTest
 	@Test
 	public void eventLootAndOtherRecordTypes()
 	{
-		game.save("loottracker", "drops_EVENT_Chambers of Xeric Challenge Mode",
-			"{\"type\":\"EVENT\",\"name\":\"Chambers of Xeric Challenge Mode\",\"kills\":10,\"drops\":[]}");
+		game.save("loottracker", "drops_EVENT_Lunar Chest", "{\"type\":\"EVENT\",\"name\":\"Lunar Chest\",\"kills\":10,\"drops\":[]}");
+		game.save("loottracker", "drops_EVENT_Chambers of Xeric", "{\"type\":\"EVENT\",\"name\":\"Chambers of Xeric\",\"kills\":30,\"drops\":[12922,1]}");
 		game.save("loottracker", "drops_PLAYER_Someone", "{\"type\":\"PLAYER\",\"name\":\"Someone\",\"kills\":3,\"drops\":[12922,1]}");
 		game.save("loottracker", "drops_NPC_Man", "{\"type\":\"NPC\",\"name\":\"Man\",\"kills\":99,\"drops\":[12922,1]}");
 		HistoryInput in = collect();
-		assertEquals(10, kc(in, "Chambers of Xeric Challenge Mode"));
+		assertEquals(10, kc(in, "Lunar Chest"));
 		assertEquals(1, in.kc.size());
 		assertTrue(in.owned.isEmpty());
 	}
@@ -167,5 +169,60 @@ public class HistorySourcesTest
 		assertEquals(1500, ledger.kc("zulrah"));
 		assertEquals(2, ledger.copyOf("zulrah").copies("Tanzanite fang"));
 		assertTrue(planner.plan(collect()).isEmpty());
+	}
+	@Test
+	public void recordsOfOneBossAddUpAndBodyguardsAreNoKills()
+	{
+		game.addItem(12601, "Ring of the gods").addItem(11818, "Godsword shard 1");
+		game.save("loottracker", "drops_NPC_Vet'ion", "{\"type\":\"NPC\",\"name\":\"Vet'ion\",\"kills\":60,\"drops\":[12601,2]}");
+		game.save("loottracker", "drops_NPC_Vet'ion Reborn", "{\"type\":\"NPC\",\"name\":\"Vet'ion Reborn\",\"kills\":40,\"drops\":[12601,3]}");
+		game.save("loottracker", "drops_NPC_General Graardor",
+			"{\"type\":\"NPC\",\"name\":\"General Graardor\",\"kills\":100,\"drops\":[11818,1]}");
+		game.save("loottracker", "drops_NPC_Sergeant Strongstack",
+			"{\"type\":\"NPC\",\"name\":\"Sergeant Strongstack\",\"kills\":300,\"drops\":[11818,1]}");
+		HistoryInput in = collect();
+		assertEquals(100, kc(in, "Vet'ion"));
+		assertEquals(100, kc(in, "General Graardor"));
+		HistoryPlanner.Plan plan = new HistoryPlanner(ledger, index).plan(in);
+		int rings = 0;
+		int shards = 0;
+		for (HistoryPlanner.ItemRow r : plan.items)
+		{
+			if (r.item.equals("Ring of the gods"))
+			{
+				rings = r.add;
+				assertEquals("vetion", r.bossId);
+			}
+			if (r.item.equals("Godsword shard 1"))
+			{
+				shards = r.add;
+				assertEquals("general-graardor", r.bossId);
+			}
+		}
+		assertEquals(5, rings);
+		assertEquals(2, shards);
+	}
+
+	@Test
+	public void itemsThePluginLeavesOutAreNotAdded()
+	{
+		java.util.Map<String, Integer> huey = new java.util.LinkedHashMap<>();
+		huey.put("Tooth half of key", 2);
+		huey.put("Dragon hunter wand", 1);
+		ledger.updateHistory(h -> h.log.put("The Hueycoatl", huey));
+		ledger.updateHistory(h -> h.log.put("Royal Titans", new java.util.LinkedHashMap<>(java.util.Collections.singletonMap("Giantsoul amulet (uncharged)", 4))));
+		HistoryPlanner.Plan plan = new HistoryPlanner(ledger, index).plan(collect());
+		assertTrue(plan.itemsMissing.toString(), plan.itemsMissing.contains("Tooth half of key"));
+		assertTrue(plan.itemsMissing.toString(), plan.itemsMissing.contains("Giantsoul amulet (uncharged)"));
+		int wands = 0;
+		for (HistoryPlanner.ItemRow r : plan.items)
+		{
+			assertFalse(r.item, r.item.startsWith("Tooth half") || r.item.startsWith("Giantsoul"));
+			if (r.item.equals("Dragon hunter wand"))
+			{
+				wands = r.add;
+			}
+		}
+		assertEquals(1, wands);
 	}
 }

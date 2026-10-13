@@ -53,7 +53,6 @@ public class BossIndexTest
 		assertEquals("barrows", kc("Your Barrows chest count is: <col=ff0000>277</col>.").bossId);
 		assertEquals("the-corrupted-gauntlet", kc("Your Corrupted Gauntlet completion count is: <col=ff0000>4729</col>.").bossId);
 		assertEquals("the-gauntlet", kc("Your Gauntlet completion count is: <col=ff0000>123</col>.").bossId);
-		assertEquals("wintertodt", kc("Your subdued Wintertodt count is: <col=ff0000>4</col>.").bossId);
 		assertEquals("the-nightmare", kc("Your Nightmare kill count is: <col=ff0000>1,130</col>").bossId);
 		assertEquals("tzkal-zuk", kc("Your TzKal-Zuk kill count is: <col=ff0000>2</col>.").bossId);
 		assertEquals("tztok-jad", kc("Your TzTok-Jad kill count is: <col=ff0000>2</col>.").bossId);
@@ -76,24 +75,19 @@ public class BossIndexTest
 	}
 
 	@Test
-	public void modesComeFromTheLabel()
+	public void theBossesThePluginLeavesOutAreNotFound()
 	{
-		KcLabel cox = kc("Your completed Chambers of Xeric count is: <col=ff0000>51</col>.");
-		assertEquals("chambers-of-xeric", cox.bossId);
-		assertEquals(0, cox.patch.get("cm"));
-		KcLabel cm = kc("Your completed Chambers of Xeric Challenge Mode count is: <col=ff0000>13</col>.");
-		assertEquals("chambers-of-xeric", cm.bossId);
-		assertEquals(1, cm.patch.get("cm"));
-		assertEquals("Chambers of Xeric Challenge Mode", cm.label);
-
-		assertEquals("normal", kc("Your completed Theatre of Blood count is: <col=ff0000>73</col>.").patch.get("mode"));
-		assertEquals("entry", kc("Your completed Theatre of Blood: Entry Mode count is: <col=ff0000>73</col>.").patch.get("mode"));
-		assertEquals("hard", kc("Your completed Theatre of Blood: Hard Mode count is: <col=ff0000>73</col>.").patch.get("mode"));
-		assertEquals("theatre-of-blood", kc("Your completed Theatre of Blood: Hard Mode count is: <col=ff0000>73</col>.").bossId);
-
-		assertEquals("tombs-of-amascut", kc("Your completed Tombs of Amascut count is: <col=ff0000>1</col>.").bossId);
-		assertEquals("tombs-of-amascut", kc("Your completed Tombs of Amascut: Expert Mode count is: <col=ff0000>1</col>.").bossId);
-		assertEquals("tombs-of-amascut", kc("Your completed Tombs of Amascut: Entry Mode count is: <col=ff0000>3</col>.").bossId);
+		assertNull(kc("Your completed Chambers of Xeric count is: <col=ff0000>51</col>."));
+		assertNull(kc("Your completed Chambers of Xeric Challenge Mode count is: <col=ff0000>13</col>."));
+		assertNull(kc("Your completed Theatre of Blood: Hard Mode count is: <col=ff0000>73</col>."));
+		assertNull(kc("Your completed Tombs of Amascut: Expert Mode count is: <col=ff0000>1</col>."));
+		assertNull(kc("Your Royal Titans kill count is: <col=ff0000>40</col>."));
+		assertNull(kc("Your subdued Wintertodt count is: <col=ff0000>4</col>."));
+		assertNull(index.loot("Chambers of Xeric"));
+		assertNull(index.loot("Theatre of Blood"));
+		assertNull(index.loot("Tombs of Amascut"));
+		assertNull(index.loot("Eldric the Ice King"));
+		assertNull(index.loot("Reward cart (Wintertodt)"));
 	}
 
 	@Test
@@ -120,19 +114,17 @@ public class BossIndexTest
 		assertEquals("grotesque-guardians", index.loot("Dawn"));
 		assertEquals("the-gauntlet", index.loot("Crystalline Hunllef"));
 		assertEquals("the-corrupted-gauntlet", index.loot("Corrupted Hunllef"));
-		assertEquals("wintertodt", index.loot("Reward cart (Wintertodt)"));
 		assertEquals("tempoross", index.loot("Reward pool (Tempoross)"));
 		assertEquals("abyssal-sire", index.loot("Unsired"));
 		assertEquals("abyssal-sire", index.loot("Abyssal Sire"));
 		assertEquals("barrows", index.loot("Barrows"));
 		assertEquals("moons-of-peril", index.loot("Lunar Chest"));
 		assertEquals("fortis-colosseum", index.loot("Fortis Colosseum"));
-		assertEquals("chambers-of-xeric", index.loot("Chambers of Xeric"));
-		assertEquals("theatre-of-blood", index.loot("Theatre of Blood"));
-		assertEquals("tombs-of-amascut", index.loot("Tombs of Amascut"));
 		assertEquals("doom-of-mokhaiotl", index.loot("Doom of Mokhaiotl"));
 		assertEquals("the-nightmare", index.loot("The Nightmare"));
 		assertEquals("vetion", index.loot("Vet'ion Reborn"));
+		assertEquals("the-hueycoatl", index.loot("Hueycoatl body"));
+		assertEquals("fortis-colosseum", index.loot("Sol Heredit"));
 		assertEquals("crazy-archaeologist", index.loot("Crazy archaeologist"));
 		assertNull(index.loot("Supply crate (Wintertodt)"));
 		assertNull(index.loot("Casket (Tempoross)"));

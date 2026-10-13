@@ -141,15 +141,98 @@ public class LedgerPanelTest
 		assertEquals(2, o.lastView().tracked);
 		String t = fx.pageText();
 		assertTrue(t, t.contains("2 bosses tracked"));
+		assertTrue(t, t.contains("64 available"));
 		assertFalse(t, t.contains("Longest dry streaks"));
-		assertTrue(t, t.contains("Driest so far"));
-		assertTrue(t, t.contains("Running hot"));
+		assertFalse(t, t.contains("Driest so far"));
+		assertFalse(t, t.contains("Running hot"));
+		assertTrue(t, t.contains("Biggest Spoons"));
+		assertTrue(t, t.contains("Dragonbone necklace"));
 		assertTrue(t, t.contains("My bosses"));
 		assertTrue(t, t.contains("2,000"));
 		assertTrue(t, t.contains("Zulrah"));
 		assertTrue(t, t.contains("Vorkath"));
 		assertTrue(t, t.contains("All bosses"));
 		assertFalse(t, t.contains("Nothing tracked yet"));
+	}
+
+	@Test
+	public void theOverviewListsOnlyTheTickedBosses()
+	{
+		fx.ledger.setKc("zulrah", 300);
+		fx.ledger.setKc("duke-sucellus", 40);
+		fx.ledger.setShown(java.util.Collections.singletonList("zulrah"), false);
+		fx.settle();
+		String t = fx.pageText();
+		assertTrue(t, t.contains("1 boss tracked \u00b7 63 of 64 shown"));
+		assertTrue(t, t.contains("Duke Sucellus"));
+		assertFalse(t, t.contains("Zulrah"));
+		// the search says when a boss left out matches
+		Swings.edt(() -> fx.panel.overviewPage().searchField().setText("zulr"));
+		fx.settle();
+		t = fx.pageText();
+		assertTrue(t, t.contains("No boss or item matches \"zulr\" among the bosses you show."));
+		assertTrue(t, t.contains("1 boss you have unticked under Settings, Bosses to show, also matches."));
+		Swings.edt(() -> fx.panel.overviewPage().searchField().setText("sucel"));
+		fx.settle();
+		t = fx.pageText();
+		assertTrue(t, t.contains("Duke Sucellus"));
+		assertFalse(t, t.contains("unticked"));
+		// none of the bosses with kills shown
+		Swings.edt(() -> fx.panel.overviewPage().searchField().setText(""));
+		fx.ledger.setShown(java.util.Collections.singletonList("duke-sucellus"), false);
+		fx.settle();
+		t = fx.pageText();
+		assertTrue(t, t.contains("None of the bosses you have kills at are ticked"));
+		assertFalse(t, t.contains("Nothing tracked yet"));
+		assertFalse(t, t.contains("My bosses"));
+		assertFalse(t, t.contains("No spoons yet"));
+		Swings.edt(Swings.button(fx.panel.bodyColumn(), "Choose bosses")::doClick);
+		fx.settle();
+		assertEquals("settings", fx.view());
+	}
+
+	@Test
+	public void theBiggestSpoonsShowTheFirstTenAndTheRestOnRequest()
+	{
+		// a pet after a few kills at a dozen bosses: a dozen spoons
+		int bosses = 0;
+		java.util.Map<String, List<String>> logIndex = com.dropluckledger.engine.Catalog.logIndex(fx.data);
+		for (com.dropluckledger.engine.Data.Boss b : com.dropluckledger.engine.Catalog.ordered(fx.data))
+		{
+			for (String n : com.dropluckledger.engine.Catalog.defaultTracked(b))
+			{
+				List<String> where = logIndex.get(n);
+				if (b.meta().get(n).isPet() && where != null && where.size() == 1 && bosses < 14)
+				{
+					fx.ledger.setKc(b.id, 10);
+					fx.ledger.logDrop(b.id, n, 5, 1, null, Drop.SRC_MANUAL);
+					bosses++;
+					break;
+				}
+			}
+		}
+		fx.settle();
+		List<Views.Rank> spoons = fx.panel.overviewPage().lastView().spoons;
+		assertTrue(spoons.size() + " spoons", spoons.size() > OverviewPage.SPOONS_SHOWN);
+		String t = fx.pageText();
+		for (int i = 0; i < spoons.size(); i++)
+		{
+			assertEquals(spoons.get(i).item, i < OverviewPage.SPOONS_SHOWN, t.contains(spoons.get(i).item));
+		}
+		Swings.edt(Swings.button(fx.panel.bodyColumn(), "Show all " + spoons.size())::doClick);
+		fx.settle();
+		t = fx.pageText();
+		for (Views.Rank r : spoons)
+		{
+			assertTrue(r.item, t.contains(r.item));
+		}
+		// it stays open while the figures change, and closes again
+		fx.ledger.addKc(spoons.get(0).bossId, 1);
+		fx.settle();
+		assertTrue(fx.pageText().contains(spoons.get(spoons.size() - 1).item));
+		Swings.edt(Swings.button(fx.panel.bodyColumn(), "Show fewer")::doClick);
+		fx.settle();
+		assertFalse(fx.pageText().contains(spoons.get(spoons.size() - 1).item));
 	}
 
 	@Test
@@ -423,6 +506,120 @@ public class LedgerPanelTest
 	}
 
 	@Test
+	public void teamPlayIsExplainedOnTheBossPage()
+	{
+		fx.ledger.setKc("callisto", 50);
+		fx.openBoss("callisto");
+		assertTrue(Swings.text(fx.panel.bossPage()), Swings.text(fx.panel.bossPage()).contains("Solo rates are assumed"));
+		javax.swing.JSpinner share = (javax.swing.JSpinner) fx.panel.bossPage().paramControls().get("share");
+		Swings.edt(() -> share.setValue(50));
+		fx.settle();
+		assertFalse(Swings.text(fx.panel.bossPage()).contains("Solo rates are assumed"));
+
+		fx.ledger.setKc("general-graardor", 300);
+		fx.ledger.update("general-graardor", st ->
+		{
+			st.liveFrom = 201;
+			st.seen = new java.util.LinkedHashMap<>(java.util.Collections.singletonMap("looted", 201));
+			java.util.Map<String, Object> d = com.dropluckledger.engine.Engine.defaultParams(fx.data.boss("general-graardor"));
+			Ledger.setKillParamsLocked(st, 250, java.util.Collections.singletonMap("looted", (Object) 0), d);
+			Ledger.setKillParamsLocked(st, 251, java.util.Collections.singletonMap("looted", (Object) 0), d);
+			return null;
+		});
+		fx.openBoss("general-graardor");
+		assertTrue(Swings.text(fx.panel.bossPage()), Swings.text(fx.panel.bossPage()).contains("2 kills where another player got the loot"));
+		assertTrue(Swings.text(fx.panel.bossPage()), Swings.text(fx.panel.bossPage()).contains("your values are for kills 1\u2013200, the ones it did not see"));
+		assertTrue(Swings.text(fx.panel.bossPage()), Swings.text(fx.panel.bossPage()).contains("Read from the game for kills 201\u2013300: the loot was yours for 98 of 100."));
+		// the setting is for the kills before the plugin saw any; the kills it saw keep what the game said
+		javax.swing.JSpinner looted = (javax.swing.JSpinner) fx.panel.bossPage().paramControls().get("looted");
+		Swings.edt(() -> looted.setValue(30));
+		fx.settle();
+		BossState g = fx.ledger.copyOf("general-graardor");
+		assertEquals(30, g.paramsAt(200).get("looted"));
+		assertEquals(0, g.paramsAt(250).get("looted"));
+		assertNull(g.paramsAt(260).get("looted"));
+		assertEquals(30, looted.getValue());
+	}
+
+	@Test
+	public void aSettingTheGameRevealsIsSetForTheOtherKills()
+	{
+		fx.ledger.setKc("hespori", 40);
+		com.dropluckledger.capture.Capture cap = new com.dropluckledger.capture.Capture(fx.ledger, new com.dropluckledger.capture.BossIndex(fx.data));
+		cap.onKillCount("Hespori", 41, 100);
+		cap.onLoot(new com.dropluckledger.capture.Capture.Loot("Hespori", 1, java.util.Collections.emptyList(), java.util.Collections.singletonMap("farming", 70), 102));
+		cap.onKillCount("Hespori", 42, 200);
+		cap.onLoot(new com.dropluckledger.capture.Capture.Loot("Hespori", 1, java.util.Collections.emptyList(), java.util.Collections.singletonMap("farming", 72), 202));
+		fx.openBoss("hespori");
+		String text = Swings.text(fx.panel.bossPage());
+		assertTrue(text, text.contains("your values are for kills 1\u201340, the ones it did not see"));
+		assertTrue(text, text.contains("Read from the game for kills 41\u201342: Farming level: 70 \u00d71, 72 \u00d71."));
+		javax.swing.JSpinner farming = (javax.swing.JSpinner) fx.panel.bossPage().paramControls().get("farming");
+		// the kills before took the first level the plugin read
+		assertEquals(70, farming.getValue());
+		Swings.edt(() -> farming.setValue(60));
+		fx.settle();
+		BossState t = fx.ledger.copyOf("hespori");
+		assertEquals(60, t.paramsAt(40).get("farming"));
+		assertEquals(70, t.paramsAt(41).get("farming"));
+		assertEquals(72, t.paramsAt(42).get("farming"));
+		assertEquals(60, farming.getValue());
+		// the choice of kills to apply a change to is only for the settings the player sets
+		assertFalse(fx.panel.bossPage().scopeShown());
+		fx.ledger.setKc("duke-sucellus", 3);
+		fx.openBoss("duke-sucellus");
+		assertTrue(fx.panel.bossPage().scopeShown());
+	}
+
+	@Test
+	public void theNoteSaysWhichKillsThePlayersValuesAreFor()
+	{
+		java.util.Map<String, Integer> seen = new java.util.LinkedHashMap<>();
+		seen.put("Blue Moon defeated this run", null);
+		assertEquals("For the settings the plugin reads from the game, your values are for the kills it has not seen.", BossPage.readNote(seen));
+		seen.put("Blue Moon defeated this run", 2);
+		assertEquals("For the settings the plugin reads from the game, your values are for kill 1, the ones it did not see.", BossPage.readNote(seen));
+		seen.put("Blood Moon defeated this run", 1);
+		assertEquals("For the settings the plugin reads from the game, your values are for the kills it did not see "
+			+ "(Blue Moon defeated this run: kill 1; Blood Moon defeated this run: none).", BossPage.readNote(seen));
+		seen.put("Blue Moon defeated this run", 1);
+		assertEquals("The plugin read the settings it can from the game for every kill.", BossPage.readNote(seen));
+	}
+
+	@Test
+	public void itemsThePluginHidesAreNotOnTheBossPage()
+	{
+		fx.ledger.setKc("barrows", 50);
+		fx.ledger.logDrop("barrows", "Ahrim's hood", 10, 1, null, Drop.SRC_MANUAL);
+		// a backup from the web page can still have them
+		fx.ledger.logDrop("barrows", "Bolt rack", 20, 35, null, Drop.SRC_MANUAL);
+		fx.ledger.setTracked("barrows", "Bolt rack", true);
+		fx.openBoss("barrows");
+		BossPage bp = fx.panel.bossPage();
+		String t = Swings.text(bp);
+		assertTrue(t, t.contains("Ahrim's hood"));
+		assertTrue(t, t.contains("1 logged"));
+		assertFalse(t, t.contains("Bolt rack"));
+		assertFalse(bp.lastView().addable.contains("Bolt rack"));
+		assertFalse(bp.lastView().addable.contains("Loop half of key"));
+		// nor on the drop table
+		Swings.edt(() -> bp.selectTab(BossPage.TABLE));
+		fx.settle();
+		t = Swings.text(fx.panel.bossPage());
+		assertTrue(t, t.contains("Ahrim's hood"));
+		assertFalse(t, t.contains("Bolt rack"));
+		assertFalse(t, t.contains("half of key"));
+	}
+
+	@Test
+	public void selectSettingsShowTheirOptionsCapitalised()
+	{
+		fx.ledger.setKc("maggot-king", 5);
+		fx.openBoss("maggot-king");
+		assertTrue(Swings.text(fx.panel.bossPage()), Swings.text(fx.panel.bossPage()).contains("Reward option: Stomach"));
+	}
+
+	@Test
 	public void newKillsOnlyStartsASettingPeriodAndTheyCanBeMerged()
 	{
 		fx.ledger.setKc("zulrah", 500);
@@ -439,6 +636,13 @@ public class LedgerPanelTest
 		assertTrue(Swings.text(bp), Swings.text(bp).contains("2 setting periods"));
 		JButton merge = Swings.button(bp, "Merge into one");
 		assertTrue(merge.isVisible());
+		// merging loses what the game said about single kills, so it asks first
+		fx.dialogs.confirmAnswer = false;
+		Swings.edt(merge::doClick);
+		fx.settle();
+		assertEquals(2, fx.ledger.copyOf("zulrah").segs.size());
+		assertTrue(fx.dialogs.asked.contains("confirm:Merge settings"));
+		fx.dialogs.confirmAnswer = true;
 		Swings.edt(merge::doClick);
 		fx.settle();
 		assertEquals(1, fx.ledger.copyOf("zulrah").segs.size());

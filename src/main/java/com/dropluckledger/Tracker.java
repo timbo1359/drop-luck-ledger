@@ -48,6 +48,7 @@ import net.runelite.api.GameState;
 import net.runelite.api.ScriptID;
 import net.runelite.api.Skill;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.util.Filepath;
 import net.runelite.http.api.loottracker.LootRecordType;
 import org.slf4j.Logger;
@@ -63,6 +64,15 @@ final class Tracker
 	private static final Logger log = LoggerFactory.getLogger(Tracker.class);
 
 	private static final String DATA_RESOURCE = "/com/dropluckledger/data.json";
+	private static final String COLOSSEUM = "fortis-colosseum";
+	/**
+	 * The game's message after each wave of the Fortis Colosseum ("Wave 5 completed! Wave duration: 2:03.60").
+	 */
+	private static final java.util.regex.Pattern WAVE_COMPLETED = java.util.regex.Pattern.compile("^Wave (\\d+) completed!");
+	/**
+	 * How often (in ticks) to look again whether the Loot Tracker plugin is on.
+	 */
+	private static final int LOOT_TRACKER_CHECK_TICKS = 50;
 	private static final String ICON_FILE = "item-ids.json";
 	private static final long SAVE_DELAY_MS = 1500;
 	private static final long ICON_SAVE_PERIOD_S = 30;
@@ -124,6 +134,15 @@ final class Tracker
 	private String houseOwner;
 	private boolean offeredHistory;
 	private boolean scanChecked;
+	/**
+	 * Whether RuneLite's Loot Tracker plugin is on, looked at every few ticks.
+	 */
+	private boolean lootTrackerOn = true;
+	private int lootTrackerCheckedTick = Integer.MIN_VALUE / 2;
+	/**
+	 * The last Fortis Colosseum wave completed (0: none since the last claim): the wave a claim is made at.
+	 */
+	private int colosseumWave;
 
 	/**
 	 * @param dir      the plugin's data folder
@@ -315,6 +334,7 @@ final class Tracker
 				break;
 			case LOGGING_IN:
 				c.capture.reset();
+				colosseumWave = 0;
 				break;
 			default:
 				break;
@@ -468,8 +488,7 @@ final class Tracker
 		{
 			return;
 		}
-		if (type != ChatMessageType.GAMEMESSAGE && type != ChatMessageType.SPAM
-			&& type != ChatMessageType.TRADE && type != ChatMessageType.FRIENDSCHATNOTIFICATION)
+		if (type != ChatMessageType.GAMEMESSAGE && type != ChatMessageType.SPAM && type != ChatMessageType.TRADE)
 		{
 			return;
 		}
@@ -479,6 +498,11 @@ final class Tracker
 		{
 			c.capture.onKillCount(kc.label, kc.count, tick);
 			return;
+		}
+		java.util.regex.Matcher wave = WAVE_COMPLETED.matcher(KcMessages.stripTags(message));
+		if (wave.find())
+		{
+			colosseumWave = Integer.parseInt(wave.group(1));
 		}
 		final String logged = KcMessages.collectionLogItem(message);
 		if (logged != null)
@@ -496,7 +520,7 @@ final class Tracker
 	 *
 	 * @param itemIds    the ids of the items received
 	 * @param quantities how many of each (same length)
-	 * @param metadata   what the Loot Tracker knows about the reward (the raid level, the delve, ...), or null
+	 * @param metadata   what the Loot Tracker knows about the reward (the delve, ...), or null
 	 */
 	void onLoot(LootRecordType type, String name, int amount, int[] itemIds, int[] quantities, Object metadata)
 	{
@@ -525,21 +549,80 @@ final class Tracker
 				stacks.add(new Capture.Stack(item, quantities[i]));
 			}
 		}
-		c.capture.onLoot(new Capture.Loot(name, amount, stacks, hints(bossId, metadata), game.tickCount()));
+		c.capture.onLoot(new Capture.Loot(name, amount, stacks, hints(bossId, stacks, metadata), game.tickCount()));
 	}
 
 	/**
-	 * Boss settings the game shows along with a reward: the raid level, the delve, the player's skill levels.
+	 * Boss settings the game shows along with a reward: the delve, the wave, the player's skill levels, whether the player was the
+	 * MVP, how many brothers or moons were defeated, whether the loot was the player's.
+	 *
+	 * @param stacks the items, named as the game names them
 	 */
-	Map<String, Object> hints(String bossId, Object metadata)
+	Map<String, Object> hints(String bossId, List<Capture.Stack> stacks, Object metadata)
 	{
 		Map<String, Object> hints = new HashMap<>();
 		switch (bossId)
 		{
-			case "tombs-of-amascut":
-				if (metadata instanceof int[] && ((int[]) metadata).length > 0)
+			case "scurrius":
+				// only the MVP (or a solo player) gets the rat meat
+				hints.put("mvp", has(stacks, "Raw rat meat") ? 1 : 0);
+				break;
+			case "nex":
+			case "the-nightmare":
+				// big bones only drop for the MVP
+				hints.put("mvp", has(stacks, "Big bones") ? 1 : 0);
+				break;
+			case "revenant-maledictus":
+			{
+				// a player who did not deal the most damage gets only blighted supplies
+				boolean onlySupplies = !stacks.isEmpty();
+				for (Capture.Stack st : stacks)
 				{
-					hints.put("raidLevel", ((int[]) metadata)[0]);
+					onlySupplies &= st.name.startsWith("Blighted ");
+				}
+				hints.put("looted", onlySupplies ? 0 : 100);
+				break;
+			}
+			case "brutus":
+			case "bryophyta":
+				hints.put("members", game.isMembersWorld() ? 1 : 0);
+				break;
+			case "barrows":
+			{
+				int brothers = 0;
+				for (int v : new int[] {VarbitID.BARROWS_KILLED_AHRIM, VarbitID.BARROWS_KILLED_DHAROK, VarbitID.BARROWS_KILLED_GUTHAN,
+					VarbitID.BARROWS_KILLED_KARIL, VarbitID.BARROWS_KILLED_TORAG, VarbitID.BARROWS_KILLED_VERAC})
+				{
+					if (game.varbit(v) > 0)
+					{
+						brothers++;
+					}
+				}
+				if (brothers > 0)
+				{
+					hints.put("brothers", brothers);
+				}
+				break;
+			}
+			case "moons-of-peril":
+			{
+				int blood = game.varbit(VarbitID.PMOON_BOSS_BLOOD_DEAD);
+				int blue = game.varbit(VarbitID.PMOON_BOSS_BLUE_DEAD);
+				int eclipse = game.varbit(VarbitID.PMOON_BOSS_ECLIPSE_DEAD);
+				if (blood > 0 || blue > 0 || eclipse > 0)
+				{
+					hints.put("blood", blood > 0 ? 1 : 0);
+					hints.put("blue", blue > 0 ? 1 : 0);
+					hints.put("eclipse", eclipse > 0 ? 1 : 0);
+				}
+				break;
+			}
+			case COLOSSEUM:
+				// the chest is claimed between waves: the last wave completed is the wave claimed at
+				if (colosseumWave > 0)
+				{
+					hints.put("waves", colosseumWave);
+					colosseumWave = 0;
 				}
 				break;
 			case "doom-of-mokhaiotl":
@@ -554,13 +637,22 @@ final class Tracker
 			case "hespori":
 				hints.put("farming", game.realLevel(Skill.FARMING));
 				break;
-			case "wintertodt":
-				hints.put("fm200", game.experience(Skill.FIREMAKING) >= 200_000_000 ? 1 : 0);
-				break;
 			default:
 				break;
 		}
 		return hints;
+	}
+
+	private static boolean has(List<Capture.Stack> stacks, String item)
+	{
+		for (Capture.Stack st : stacks)
+		{
+			if (st.name.equalsIgnoreCase(item))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private void onDropLogged(Core c, String bossId, String item, int killNo)
@@ -607,6 +699,19 @@ final class Tracker
 			killLogLoaded = false;
 			return;
 		}
+		final int tick = game.tickCount();
+		if (tick - lootTrackerCheckedTick >= LOOT_TRACKER_CHECK_TICKS || tick < lootTrackerCheckedTick)
+		{
+			lootTrackerCheckedTick = tick;
+			boolean on = game.isLootTrackerOn();
+			if (!on && lootTrackerOn)
+			{
+				message("RuneLite's Loot Tracker plugin is off, so drops are not recorded automatically (kill counts still are). "
+					+ "Turn it on in RuneLite's plugin list to record drops.");
+			}
+			lootTrackerOn = on;
+		}
+		c.capture.onTick(tick, lootTrackerOn);
 		if (c.icons.isScanning() && c.icons.scanTick(System.currentTimeMillis()))
 		{
 			saveIcons(c);

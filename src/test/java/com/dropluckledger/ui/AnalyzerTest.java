@@ -149,104 +149,128 @@ public class AnalyzerTest
 		assertNull(item(new Analyzer(one, null).boss(ids.get(0), () -> false), shared).pool);
 	}
 
+	private static Views.Rank spoon(Views.OverviewView o, String item)
+	{
+		for (Views.Rank r : o.spoons)
+		{
+			if (r.item.equals(item))
+			{
+				return r;
+			}
+		}
+		return null;
+	}
+
 	@Test
-	public void theOverviewRanksItemsByHowLuckyTheyAre()
+	public void theBiggestSpoonsComeLuckiestFirst()
 	{
 		Ledger l = ledger();
 		l.setKc("zulrah", 2000);
 		l.setKc("vorkath", 100);
 		l.logDrop("vorkath", "Dragonbone necklace", 40, 1, null, Drop.SRC_MANUAL);
+		l.logDrop("vorkath", "Vorki", 60, 1, null, Drop.SRC_MANUAL);
 		Analyzer an = new Analyzer(l, null);
 		Views.OverviewView o = an.overview(() -> false);
 		assertEquals(2, o.tracked);
+		assertEquals(2, o.active);
 		assertEquals(2, o.bosses.size());
-		assertFalse(o.driest.isEmpty());
-		assertTrue(o.driest.size() <= Analyzer.DRY);
-		for (int i = 0; i < o.driest.size(); i++)
+		assertFalse(o.spoons.isEmpty());
+		for (int i = 0; i < o.spoons.size(); i++)
 		{
-			Views.Rank r = o.driest.get(i);
-			assertTrue(r.pct < 0.4);
-			assertTrue(r.expected >= 0.5);
-			if (i > 0)
-			{
-				assertTrue(o.driest.get(i - 1).pct <= r.pct);
-			}
-		}
-		for (int i = 0; i < o.hottest.size(); i++)
-		{
-			Views.Rank r = o.hottest.get(i);
+			Views.Rank r = o.spoons.get(i);
 			assertTrue(r.got > 0);
 			assertTrue(r.pct >= 0.6);
 			if (i > 0)
 			{
-				assertTrue(o.hottest.get(i - 1).pct >= r.pct);
+				assertTrue(o.spoons.get(i - 1).pct >= r.pct);
 			}
 		}
+		// the pet at 1/3,000 within 100 kills is a bigger spoon than the necklace at 1/1,000
+		assertEquals("Vorki", o.spoons.get(0).item);
+		assertNotNull(spoon(o, "Dragonbone necklace"));
 		// the boss list shows the one touched last first
 		assertEquals("vorkath", o.bosses.get(0).id);
 	}
 
 	@Test
-	public void aDryItemWithACopyIsStillRankedDry()
+	public void aDryItemIsNoSpoon()
 	{
 		Ledger l = ledger();
 		l.setKc("zulrah", 6000);
 		l.logDrop("zulrah", "Magic fang", 100, 1, null, Drop.SRC_MANUAL);
 		Views.OverviewView o = new Analyzer(l, null).overview(() -> false);
-		Views.Rank fang = null;
-		for (Views.Rank r : o.driest)
-		{
-			if (r.item.equals("Magic fang"))
-			{
-				fang = r;
-			}
-		}
-		assertNotNull("one copy in 6,000 kills is dry", fang);
-		assertEquals(1, fang.got);
+		assertNull("one copy in 6,000 kills is dry", spoon(o, "Magic fang"));
 	}
 
 	@Test
 	public void aSharedItemIsOneLineWithThePooledLuck()
 	{
-		Map<String, List<String>> idx = Catalog.logIndex(data);
-		String shared = null;
-		for (Map.Entry<String, List<String>> e : idx.entrySet())
-		{
-			if (e.getValue().size() >= 2)
-			{
-				shared = e.getKey();
-				break;
-			}
-		}
-		List<String> ids = idx.get(shared);
+		String shared = "Virtus mask";
+		List<String> ids = java.util.Arrays.asList("duke-sucellus", "vardorvis");
+		assertTrue(Catalog.logIndex(data).get(shared).containsAll(ids));
 		Ledger l = ledger();
-		l.setKc(ids.get(0), 4000);
-		l.setKc(ids.get(1), 3000);
+		l.setKc(ids.get(0), 40);
+		l.setKc(ids.get(1), 30);
+		l.logDrop(ids.get(0), shared, 20, 1, null, Drop.SRC_MANUAL);
+		l.logDrop(ids.get(1), shared, 10, 1, null, Drop.SRC_MANUAL);
 		Analyzer an = new Analyzer(l, null);
 		Views.OverviewView o = an.overview(() -> false);
 		int lines = 0;
-		for (Views.Rank r : o.driest)
+		for (Views.Rank r : o.spoons)
 		{
 			if (r.item.equals(shared))
 			{
 				lines++;
 				assertTrue(r.pooled);
-				assertEquals(an.boss(ids.get(0), () -> false).items.stream().filter(i -> i.name.equals(r.item)).findFirst().get().pool.pct, r.pct, 0);
+				assertEquals(item(an.boss(ids.get(0), () -> false), shared).pool.pct, r.pct, 0);
+				assertEquals(ids.get(0), r.bossId); // the boss with the most kills
 			}
 		}
-		for (Views.Rank r : o.hottest)
-		{
-			if (r.item.equals(shared))
-			{
-				lines++;
-			}
-		}
-		assertTrue("one line at most for a shared item, not one per boss", lines <= 1);
+		assertEquals("one line for a shared item, not one per boss", 1, lines);
 		// both bosses show the same pooled luck
 		Luck.Pool first = item(an.boss(ids.get(0), () -> false), shared).pool;
 		Luck.Pool second = item(an.boss(ids.get(1), () -> false), shared).pool;
 		assertEquals(first.pct, second.pct, 0);
 		assertEquals(first.O, second.O);
+	}
+
+	@Test
+	public void theOverviewListsOnlyTheBossesToShow()
+	{
+		Ledger l = ledger();
+		l.setKc("vorkath", 100);
+		l.logDrop("vorkath", "Vorki", 60, 1, null, Drop.SRC_MANUAL);
+		l.setKc("duke-sucellus", 40);
+		l.setKc("vardorvis", 30);
+		l.logDrop("duke-sucellus", "Virtus mask", 20, 1, null, Drop.SRC_MANUAL);
+		l.logDrop("vardorvis", "Virtus mask", 10, 1, null, Drop.SRC_MANUAL);
+		Analyzer an = new Analyzer(l, null);
+		Views.Rank before = spoon(an.overview(() -> false), "Virtus mask");
+		// only the Desert Treasure II bosses
+		l.setShown(java.util.Collections.singletonList("vorkath"), false);
+		Views.OverviewView o = an.overview(() -> false);
+		assertEquals(2, o.tracked);
+		assertEquals(3, o.active);
+		assertNull(spoon(o, "Vorki"));
+		assertTrue(o.bosses.stream().noneMatch(b -> b.id.equals("vorkath")));
+		assertNotNull(spoon(o, "Virtus mask"));
+		// an item several shown bosses drop keeps the luck of all the kills, and opens a boss that is shown
+		l.setShown(java.util.Collections.singletonList("duke-sucellus"), false);
+		o = an.overview(() -> false);
+		Views.Rank virtus = spoon(o, "Virtus mask");
+		assertEquals("vardorvis", virtus.bossId);
+		assertEquals(before.pct, virtus.pct, 0);
+		assertEquals(2, virtus.got);
+		// nothing shown
+		l.setShown(java.util.Collections.singletonList("vardorvis"), false);
+		o = an.overview(() -> false);
+		assertEquals(0, o.tracked);
+		assertEquals(3, o.active);
+		assertTrue(o.spoons.isEmpty());
+		assertTrue(o.bosses.isEmpty());
+		assertTrue(o.pooled.isEmpty());
+		// every boss is still recorded
+		assertEquals(100, l.kc("vorkath"));
 	}
 
 	@Test

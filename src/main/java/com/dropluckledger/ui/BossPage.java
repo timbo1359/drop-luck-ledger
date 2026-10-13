@@ -2,6 +2,7 @@ package com.dropluckledger.ui;
 
 import com.dropluckledger.engine.Data.Boss;
 import com.dropluckledger.engine.Data.Param;
+import com.dropluckledger.engine.Engine;
 import com.dropluckledger.ledger.BossState;
 import com.dropluckledger.ledger.Drop;
 import com.dropluckledger.ledger.Ledger;
@@ -58,6 +59,11 @@ final class BossPage extends Column implements ItemCard.Actions
 	private final Map<String, Views.ChartData> charts = new HashMap<>();
 	private final Set<String> open = new HashSet<>();
 	private final Map<String, JComponent> controls = new LinkedHashMap<>();
+	/**
+	 * Above the settings, for a boss with settings the game reveals: which kills the player's values of those are for.
+	 */
+	private final JLabel readNote = Look.muted(" ");
+	private final JLabel scopeCaption = Look.muted("Apply changes to");
 	private final Map<String, JToggleButton> tabButtons = new LinkedHashMap<>();
 	private final JSpinner kc = new JSpinner(new SpinnerNumberModel(0, 0, MAX_KC, 1));
 	private final JComboBox<String> scope = new JComboBox<>();
@@ -203,6 +209,15 @@ final class BossPage extends Column implements ItemCard.Actions
 
 	private void buildParams(Column box)
 	{
+		boolean reads = false;
+		for (Param p : boss.params)
+		{
+			reads |= readFromGame(p);
+		}
+		if (reads)
+		{
+			box.add(readNote);
+		}
 		for (Param p : boss.params)
 		{
 			switch (p.type)
@@ -216,7 +231,7 @@ final class BossPage extends Column implements ItemCard.Actions
 					{
 						if (!updating)
 						{
-							ledger.setParam(id, p.name, cb.isSelected() ? 1 : 0, scopeNew());
+							change(p, cb.isSelected() ? 1 : 0);
 						}
 					});
 					controls.put(p.name, cb);
@@ -232,7 +247,7 @@ final class BossPage extends Column implements ItemCard.Actions
 					{
 						if (!updating)
 						{
-							ledger.setParam(id, p.name, (Integer) s.getValue(), scopeNew());
+							change(p, (Integer) s.getValue());
 						}
 					});
 					controls.put(p.name, s);
@@ -243,11 +258,19 @@ final class BossPage extends Column implements ItemCard.Actions
 				{
 					JComboBox<String> cb = new JComboBox<>(p.options.toArray(new String[0]));
 					cb.setFont(Look.small());
+					cb.setRenderer(new javax.swing.DefaultListCellRenderer()
+					{
+						@Override
+						public java.awt.Component getListCellRendererComponent(javax.swing.JList<?> list, Object value, int index, boolean selected, boolean focus)
+						{
+							return super.getListCellRendererComponent(list, value == null ? null : option(value.toString()), index, selected, focus);
+						}
+					});
 					cb.addActionListener(e ->
 					{
 						if (!updating && cb.getSelectedItem() != null)
 						{
-							ledger.setParam(id, p.name, cb.getSelectedItem().toString(), scopeNew());
+							change(p, cb.getSelectedItem().toString());
 						}
 					});
 					controls.put(p.name, cb);
@@ -256,7 +279,14 @@ final class BossPage extends Column implements ItemCard.Actions
 				}
 			}
 		}
-		box.add(Look.muted("Apply changes to"));
+		boolean playerSet = false;
+		for (Param p : boss.params)
+		{
+			playerSet |= !readFromGame(p);
+		}
+		scopeCaption.setVisible(playerSet);
+		scope.setVisible(playerSet);
+		box.add(scopeCaption);
 		scope.setFont(Look.small());
 		scope.addActionListener(e ->
 		{
@@ -267,11 +297,28 @@ final class BossPage extends Column implements ItemCard.Actions
 		});
 		box.add(scope);
 		box.add(periods);
-		merge.addActionListener(e -> ledger.collapsePeriods(id));
+		merge.setToolTipText(Look.tip("Gives every kill the latest settings. What the game told the plugin about single kills (the reward taken, "
+			+ "the delve level, whose loot it was) is lost."));
+		merge.addActionListener(e ->
+		{
+			if (ctx.dialogs().confirm(ctx.window(), "Merge settings", "Give every kill of " + boss.name + " the latest settings? "
+				+ "What the game told the plugin about single kills (the reward taken, the delve level, whose loot it was) is lost.", "Merge"))
+			{
+				ledger.collapsePeriods(id);
+			}
+		});
 		JPanel m = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
 		m.setOpaque(false);
 		m.add(merge);
 		box.add(m);
+	}
+
+	/**
+	 * A setting's option as shown: "stomach" is "Stomach".
+	 */
+	static String option(String raw)
+	{
+		return raw.isEmpty() ? raw : Character.toUpperCase(raw.charAt(0)) + raw.substring(1);
 	}
 
 	private static JPanel captioned(String caption, JComponent c)
@@ -281,6 +328,154 @@ final class BossPage extends Column implements ItemCard.Actions
 		p.add(Look.wrapped(Look.esc(caption), Look.PAGE_TEXT - 4, Look.small(), Look.MUTED), BorderLayout.NORTH);
 		p.add(c, BorderLayout.CENTER);
 		return p;
+	}
+
+	/**
+	 * True for a setting the plugin reads from the game for each kill it sees (see {@code Boss.reads}): the player's value is for the
+	 * other kills only, so the kills the game told about keep what it said.
+	 */
+	private boolean readFromGame(Param p)
+	{
+		return boss.reads.contains(p.name);
+	}
+
+	private void change(Param p, Object value)
+	{
+		if (readFromGame(p))
+		{
+			ledger.setParamBefore(id, p.name, value);
+		}
+		else
+		{
+			ledger.setParam(id, p.name, value, scopeNew());
+		}
+	}
+
+	/**
+	 * Which kills the player's values of the settings the game reveals are for: the kills before the first one the plugin read each
+	 * setting for (null: it never has, so every kill).
+	 *
+	 * @param seen setting label to the first kill it was read for
+	 */
+	static String readNote(Map<String, Integer> seen)
+	{
+		Set<Integer> firsts = new HashSet<>(seen.values());
+		if (firsts.size() == 1)
+		{
+			Integer first = firsts.iterator().next();
+			if (first == null)
+			{
+				return "For the settings the plugin reads from the game, your values are for the kills it has not seen.";
+			}
+			if (first <= 1)
+			{
+				return "The plugin read the settings it can from the game for every kill.";
+			}
+			return "For the settings the plugin reads from the game, your values are for " + kills(first) + ", the ones it did not see.";
+		}
+		List<String> parts = new ArrayList<>();
+		for (Map.Entry<String, Integer> e : seen.entrySet())
+		{
+			Integer first = e.getValue();
+			parts.add(e.getKey() + ": " + (first == null ? "every kill" : first <= 1 ? "none" : kills(first)));
+		}
+		return "For the settings the plugin reads from the game, your values are for the kills it did not see (" + String.join("; ", parts) + ").";
+	}
+
+	/**
+	 * What the game said about the kills the plugin saw, setting by setting: "Brothers killed before looting the chest: 5 ×2, 6 ×38",
+	 * "Delve you claimed the loot at: 2–9 (average 6)", "You were the MVP: yes for 4 of 10".  Null when it has read nothing yet.
+	 */
+	static String readSummary(Boss boss, BossState st)
+	{
+		List<String> parts = new ArrayList<>();
+		int lo = Integer.MAX_VALUE;
+		Map<String, Object> defaults = Engine.defaultParams(boss);
+		for (Param p : boss.params)
+		{
+			Integer seen = st.seenFrom(p.name);
+			if (!boss.reads.contains(p.name) || seen == null || seen > st.kc)
+			{
+				continue;
+			}
+			lo = Math.min(lo, seen);
+			// kills per value over the kills read
+			Map<String, Integer> byValue = new LinkedHashMap<>();
+			double sum = 0;
+			double min = Double.POSITIVE_INFINITY;
+			double max = Double.NEGATIVE_INFINITY;
+			int n = 0;
+			List<com.dropluckledger.ledger.Period> segs = new ArrayList<>(st.segs);
+			segs.sort(Comparator.comparingInt(x -> x.from));
+			for (int i = 0; i < segs.size(); i++)
+			{
+				int from = Math.max(segs.get(i).from, seen);
+				int to = Math.min(i + 1 < segs.size() ? segs.get(i + 1).from - 1 : st.kc, st.kc);
+				if (to < from)
+				{
+					continue;
+				}
+				int k = to - from + 1;
+				Object v = segs.get(i).params.containsKey(p.name) ? segs.get(i).params.get(p.name) : defaults.get(p.name);
+				String key = v instanceof Number ? Fmt.num(((Number) v).doubleValue()) : option(String.valueOf(v));
+				byValue.merge(key, k, Integer::sum);
+				if (v instanceof Number)
+				{
+					double d = ((Number) v).doubleValue();
+					sum += d * k;
+					min = Math.min(min, d);
+					max = Math.max(max, d);
+				}
+				n += k;
+			}
+			if (n == 0)
+			{
+				continue;
+			}
+			String label = shortLabel(p);
+			if ("looted".equals(p.name))
+			{
+				// the share of the loot is all or nothing for a kill the plugin saw
+				Integer yours = byValue.get("100");
+				parts.add("the loot was yours for " + Fmt.num(yours == null ? 0 : yours) + " of " + Fmt.num(n));
+			}
+			else if ("bool".equals(p.type))
+			{
+				Integer yes = byValue.get("1");
+				parts.add(label + ": yes for " + Fmt.num(yes == null ? 0 : yes) + " of " + Fmt.num(n));
+			}
+			else if ("int".equals(p.type) && byValue.size() > 4)
+			{
+				parts.add(label + ": " + Fmt.num(min) + "\u2013" + Fmt.num(max) + " (average " + Fmt.num(Math.round(sum / n)) + ")");
+			}
+			else
+			{
+				List<String> vs = new ArrayList<>();
+				for (Map.Entry<String, Integer> e : byValue.entrySet())
+				{
+					vs.add(e.getKey() + " \u00d7" + Fmt.num(e.getValue()));
+				}
+				parts.add(label + ": " + String.join(", ", vs));
+			}
+		}
+		if (parts.isEmpty())
+		{
+			return null;
+		}
+		return "Read from the game for kills " + Fmt.num(lo) + "\u2013" + Fmt.num(st.kc) + ": " + String.join(" \u00b7 ", parts) + ".";
+	}
+
+	private static String kills(int firstRead)
+	{
+		return firstRead == 2 ? "kill 1" : "kills 1\u2013" + Fmt.num(firstRead - 1);
+	}
+
+	/**
+	 * A setting's label without the explanation in brackets.
+	 */
+	private static String shortLabel(Param p)
+	{
+		return p.label.replaceAll(" \\(.*\\)", "");
 	}
 
 	private boolean scopeNew()
@@ -320,11 +515,35 @@ final class BossPage extends Column implements ItemCard.Actions
 		try
 		{
 			kc.setValue(Math.max(0, Math.min(MAX_KC, ledger.kc(id))));
-			Map<String, Object> vals = ledger.currentParams(id);
+			Map<String, Object> vals = new LinkedHashMap<>(ledger.currentParams(id));
+			Map<String, Object> shown = new LinkedHashMap<>(vals);
+			BossState now = ledger.copyOf(id);
+			Map<String, Integer> seenBy = new LinkedHashMap<>();
+			for (Param p : boss.params)
+			{
+				if (!readFromGame(p))
+				{
+					continue;
+				}
+				// a setting the game reveals shows what the kills the plugin did not see are set to
+				Integer seen = now.seenFrom(p.name);
+				if (seen != null && seen > 1)
+				{
+					Object older = now.paramsAt(seen - 1).get(p.name);
+					shown.put(p.name, older != null ? older : Engine.defaultParams(boss).get(p.name));
+				}
+				seenBy.put(shortLabel(p), seen);
+				controls.get(p.name).setEnabled(seen == null || seen > 1);
+			}
+			if (!seenBy.isEmpty())
+			{
+				String read = readSummary(boss, now);
+				readNote.setText(Look.html(Look.PAGE_TEXT - 4, Look.esc(readNote(seenBy)) + (read == null ? "" : "<br>" + Look.esc(read))));
+			}
 			for (Param p : boss.params)
 			{
 				JComponent c = controls.get(p.name);
-				Object v = vals.get(p.name);
+				Object v = shown.get(p.name);
 				if (c instanceof JCheckBox)
 				{
 					((JCheckBox) c).setSelected(truthy(v));
@@ -372,13 +591,13 @@ final class BossPage extends Column implements ItemCard.Actions
 			{
 				if (truthy(v))
 				{
-					out.add(p.label.replaceAll(" \\(.*\\)", ""));
+					out.add(shortLabel(p));
 				}
 			}
 			else
 			{
-				String value = v instanceof Number ? Fmt.num(((Number) v).doubleValue()) : String.valueOf(v);
-				out.add(p.label.replaceAll(" \\(.*\\)", "") + ": " + value);
+				String value = v instanceof Number ? Fmt.num(((Number) v).doubleValue()) : option(String.valueOf(v));
+				out.add(shortLabel(p) + ": " + value);
 			}
 		}
 		if (out.isEmpty())
@@ -500,6 +719,11 @@ final class BossPage extends Column implements ItemCard.Actions
 		{
 			parts.add(note("No kills yet. Kills and drops you get in game are recorded automatically; set your kill count above if you already have some."));
 		}
+		String team = teamNote(v);
+		if (team != null)
+		{
+			parts.add(note(team));
+		}
 		if (v.any != null)
 		{
 			parts.add(new AnyCard(v.any));
@@ -515,6 +739,65 @@ final class BossPage extends Column implements ItemCard.Actions
 		}
 		parts.add(history(v));
 		Swap.into(content, parts);
+	}
+
+	/**
+	 * A line about team play for a boss whose luck depends on it: what is assumed until the player says otherwise, and the kills
+	 * left out because another player got their loot.  Null when there is nothing to say.
+	 */
+	String teamNote(Views.BossView v)
+	{
+		Map<String, Object> cur = ledger.currentParams(id);
+		List<String> out = new ArrayList<>();
+		if (boss.lootToTop())
+		{
+			int skipped = teamKillsSkipped(v.state, v.kc);
+			if (skipped > 0)
+			{
+				out.add(Fmt.num(skipped) + " kill" + (skipped == 1 ? "" : "s") + " where another player got the loot " + (skipped == 1 ? "is" : "are")
+					+ " left out of the figures.");
+			}
+		}
+		if (has("share") && !has("team") && intOf(cur.get("share"), 100) >= 100 || has("contrib") && intOf(cur.get("contrib"), 100) >= 100)
+		{
+			out.add("Solo rates are assumed (all of the damage). In a duo or team, set your share of the damage under Boss settings.");
+		}
+		else if (has("team") && has("share") && intOf(cur.get("team"), 1) <= 1 && intOf(cur.get("share"), 0) == 0)
+		{
+			out.add("Solo is assumed. In a team, set the team size (and your share of the damage, if you know it) under Boss settings.");
+		}
+		return out.isEmpty() ? null : String.join(" ", out);
+	}
+
+	private boolean has(String param)
+	{
+		for (Param p : boss.params)
+		{
+			if (p.name.equals(param))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Kills set to "another player got the loot" (the share of looted kills is 0 for them).
+	 */
+	static int teamKillsSkipped(BossState s, int kc)
+	{
+		int n = 0;
+		for (int i = 0; i < s.segs.size(); i++)
+		{
+			com.dropluckledger.ledger.Period p = s.segs.get(i);
+			Object v = p.params.get("looted");
+			if (v instanceof Number && ((Number) v).doubleValue() == 0)
+			{
+				int end = i + 1 < s.segs.size() ? s.segs.get(i + 1).from - 1 : kc;
+				n += Math.max(0, Math.min(end, kc) - p.from + 1);
+			}
+		}
+		return n;
 	}
 
 	private static JComponent note(String text)
@@ -560,7 +843,17 @@ final class BossPage extends Column implements ItemCard.Actions
 	private JComponent history(Views.BossView v)
 	{
 		Column c = new Column(4);
-		List<Drop> drops = new ArrayList<>(v.state.drops);
+		List<Drop> drops = new ArrayList<>();
+		Map<String, Engine.ItemMeta> meta = boss.meta();
+		for (Drop d : v.state.drops)
+		{
+			// drops of items the plugin hides (a backup from the web app can have them) stay in the ledger but are not listed
+			Engine.ItemMeta im = meta.get(d.item);
+			if (im == null || !im.hidden)
+			{
+				drops.add(d);
+			}
+		}
 		drops.sort(Comparator.<Drop>comparingInt(d -> d.kc == null ? 0 : d.kc).reversed().thenComparing(Comparator.<Drop>comparingLong(d -> d.t).reversed()));
 		JPanel top = new JPanel(new BorderLayout());
 		top.setOpaque(false);
@@ -901,6 +1194,11 @@ final class BossPage extends Column implements ItemCard.Actions
 	JComboBox<String> scopeBox()
 	{
 		return scope;
+	}
+
+	boolean scopeShown()
+	{
+		return scope.isVisible();
 	}
 
 	Column contentColumn()

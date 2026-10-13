@@ -79,6 +79,22 @@ public class FormsTest
 	}
 
 	@Test
+	public void theLogFormLeavesOutTheItemsThePluginHides()
+	{
+		LogForm f = logForm("barrows", null, null);
+		List<String> items = new java.util.ArrayList<>();
+		for (int i = 0; i < f.itemBox().getItemCount(); i++)
+		{
+			items.add(f.itemBox().getItemAt(i));
+		}
+		assertTrue(items.contains("Ahrim's hood"));
+		assertTrue(items.contains("Coins"));
+		assertFalse(items.contains("Bolt rack"));
+		assertFalse(items.contains("Loop half of key"));
+		assertFalse(items.contains("Tooth half of key"));
+	}
+
+	@Test
 	public void unknownKillTurnsTheKillNumberOff()
 	{
 		fx.ledger.setKc("zulrah", 50);

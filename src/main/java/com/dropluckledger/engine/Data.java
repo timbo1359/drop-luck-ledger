@@ -156,15 +156,48 @@ public final class Data
 		public List<LogItem> logItems = new ArrayList<>();
 		public String rollvar;
 		public String simnote;
+		/**
+		 * The share of kills that pay out (an expression of the settings), or null: see {@link Engine#lootScale}.
+		 */
+		public String scale;
+		/**
+		 * How loot events relate to kills: "kill" (one loot event per kill, the default), "extra" (rewards taken later that never
+		 * count as kills: Tempoross), "claim" (every loot event is one run and there is no kill-count message: Doom of
+		 * Mokhaiotl) or "top" (only the top damage dealer gets the loot: a kill without loot paid another player).
+		 */
+		public String lootmode;
+		/**
+		 * Names of the other monsters whose loot counts for this boss (the God Wars bodyguards); it is recorded under the boss but
+		 * never counts as a kill.
+		 */
+		public List<String> extraLoot = new ArrayList<>();
+		/**
+		 * Settings a kill has when its regular loot arrives (ONLOOT) and when it never does (NOLOOT): another player got it, the
+		 * corpse was destroyed, the loot was sacrificed.  Empty for most bosses.
+		 */
+		public Map<String, String> onLoot = new LinkedHashMap<>();
+		public Map<String, String> noLoot = new LinkedHashMap<>();
+		/**
+		 * Settings the plugin reads from the game for every kill it sees (READS): for those kills they are not the player's to set,
+		 * so what the player sets applies to the other kills only.
+		 */
+		public List<String> reads = new ArrayList<>();
+		/**
+		 * Of those, the ones whose first value seen also stands for the earlier kills, unless the player set them (INFER): the
+		 * Fishing level of the first Tempoross reward seen is a better guess for the rewards before than a default.
+		 */
+		public List<String> infer = new ArrayList<>();
 
 		public transient Data data;
 		public transient Expr rollsFn;
+		public transient Expr scaleFn;
 		public transient RollVar rv;
 		public transient List<Derived> derived = new ArrayList<>();
 		// lazily computed, shared between threads
 		transient Luck.Dep depCache;
 		transient Map<String, Engine.ItemMeta> metaCache;
 		transient java.util.Set<String> logCache;
+		transient java.util.Set<String> tertCache;
 
 		void prepare()
 		{
@@ -178,6 +211,16 @@ public final class Data
 			kc = nn(kc);
 			logItems = nn(logItems);
 			rollsFn = rolls != null && !rolls.isEmpty() ? Expr.parse(rolls) : null;
+			scaleFn = scale != null && !scale.isEmpty() ? Expr.parse(scale) : null;
+			extraLoot = nn(extraLoot);
+			reads = nn(reads);
+			infer = nn(infer);
+			onLoot = onLoot == null ? new LinkedHashMap<>() : onLoot;
+			noLoot = noLoot == null ? new LinkedHashMap<>() : noLoot;
+			if (lootmode == null || lootmode.isEmpty())
+			{
+				lootmode = "kill";
+			}
 			rv = null;
 			if (rollvar != null && !rollvar.isEmpty())
 			{
@@ -203,12 +246,90 @@ public final class Data
 			}
 		}
 
-		/**
-		 * The first collection-log style label the game prints in its kill-count message, or the boss name.
-		 */
-		public String mainKcLabel()
+		public boolean lootIsExtra()
 		{
-			return kc.isEmpty() ? name : kc.get(0);
+			return "extra".equals(lootmode);
+		}
+
+		public boolean lootIsClaim()
+		{
+			return "claim".equals(lootmode);
+		}
+
+		public boolean lootToTop()
+		{
+			return "top".equals(lootmode);
+		}
+
+		/**
+		 * True when a kill without regular loot says something about the kill (see {@link #noLoot}).
+		 */
+		public boolean decidesOnLoot()
+		{
+			return !noLoot.isEmpty();
+		}
+
+		/**
+		 * Settings from {@link #onLoot} or {@link #noLoot}, with numbers as numbers.
+		 */
+		public static Map<String, Object> settings(Map<String, String> m)
+		{
+			Map<String, Object> out = new LinkedHashMap<>();
+			for (Map.Entry<String, String> e : m.entrySet())
+			{
+				String v = e.getValue();
+				try
+				{
+					out.put(e.getKey(), Integer.parseInt(v));
+				}
+				catch (NumberFormatException ex)
+				{
+					out.put(e.getKey(), v);
+				}
+			}
+			return out;
+		}
+
+		/**
+		 * Items only the tertiary and pet rolls give (clue scrolls, pets): loot of nothing else is no regular loot.
+		 */
+		public synchronized java.util.Set<String> tertiaryOnly()
+		{
+			if (tertCache == null)
+			{
+				java.util.Set<String> tableItems = new java.util.HashSet<>();
+				for (Table t : tables)
+				{
+					for (Row r : t.items)
+					{
+						tableItems.add(r.name);
+					}
+					for (Sub sb : t.subs)
+					{
+						for (Row r : sb.items)
+						{
+							tableItems.add(r.name);
+						}
+					}
+				}
+				java.util.Set<String> s = new java.util.HashSet<>();
+				for (Row r : tert)
+				{
+					if (!tableItems.contains(r.name))
+					{
+						s.add(r.name);
+					}
+				}
+				for (Row r : pets)
+				{
+					if (!tableItems.contains(r.name))
+					{
+						s.add(r.name);
+					}
+				}
+				tertCache = s;
+			}
+			return tertCache;
 		}
 
 		/**

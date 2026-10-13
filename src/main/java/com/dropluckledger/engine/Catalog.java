@@ -20,8 +20,8 @@ public final class Catalog
 	{
 	}
 
-	public static final List<String> CAT_ORDER = Arrays.asList("Raid", "Raid-style boss", "Desert Treasure II", "God Wars Dungeon", "Varlamore",
-		"Royal Titans", "Slayer", "Dragons", "Wilderness", "Dagannoth Kings", "Minigame", "Minigame boss", "Skilling boss", "Standalone", "Misc",
+	public static final List<String> CAT_ORDER = Arrays.asList("Raid-style boss", "Desert Treasure II", "God Wars Dungeon", "Varlamore",
+		"Slayer", "Dragons", "Wilderness", "Dagannoth Kings", "Minigame", "Minigame boss", "Skilling boss", "Standalone", "Misc",
 		"Minor boss", "Clue boss");
 
 	/**

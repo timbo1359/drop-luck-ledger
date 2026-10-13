@@ -3,6 +3,7 @@ package com.dropluckledger.ledger;
 import com.dropluckledger.engine.Catalog;
 import com.dropluckledger.engine.Data;
 import com.dropluckledger.engine.Data.Boss;
+import com.dropluckledger.engine.Engine.ItemMeta;
 import com.dropluckledger.engine.Luck;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -38,6 +39,11 @@ public final class Ledger
 	private final Data data;
 	private final LongSupplier clock;
 	private final Map<String, BossState> bosses = new LinkedHashMap<>();
+	/**
+	 * Bosses in the ledger file that the plugin leaves out (the raids, for one), as the JSON they were read from.  They are
+	 * never shown or counted, only written back when the ledger is saved or backed up, so their kills and drops are not lost.
+	 */
+	private final Map<String, String> retired = new LinkedHashMap<>();
 	private final Map<String, Long> revisions = new HashMap<>();
 	private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
 	private final Random rnd = new Random();
@@ -254,9 +260,11 @@ public final class Ledger
 		}
 		if (s != null)
 		{
+			Map<String, ItemMeta> meta = boss.meta();
 			for (String n : s.track)
 			{
-				if (!out.contains(n) && boss.meta().containsKey(n))
+				ItemMeta im = meta.get(n);
+				if (!out.contains(n) && im != null && !im.hidden)
 				{
 					out.add(n);
 				}
@@ -446,6 +454,106 @@ public final class Ledger
 	}
 
 	/**
+	 * Sets a value for the kills the plugin never read this setting for (see {@link BossState#seen}): the kills before the first one
+	 * it read it for, or every kill when it never has.  The kills it read keep what the game said about them.
+	 */
+	public void setParamBefore(String id, String name, Object value)
+	{
+		Map<String, Object> defaults = com.dropluckledger.engine.Engine.defaultParams(data.boss(id));
+		update(id, s ->
+		{
+			Integer seen = s.seenFrom(name);
+			setBeforeLocked(s, name, value, seen == null ? Integer.MAX_VALUE : seen, defaults);
+			return null;
+		});
+	}
+
+	/**
+	 * Gives the kills before a kill number a value for one setting, leaving that kill and the later ones as they are.
+	 */
+	static void setBeforeLocked(BossState s, String name, Object value, int until, Map<String, Object> defaults)
+	{
+		s.segs.sort((a, b) -> Integer.compare(a.from, b.from));
+		if (until != Integer.MAX_VALUE)
+		{
+			boolean starts = false;
+			Period before = null;
+			for (Period p : s.segs)
+			{
+				if (p.from == until)
+				{
+					starts = true;
+				}
+				if (p.from < until)
+				{
+					before = p;
+				}
+			}
+			if (!starts && before != null)
+			{
+				s.segs.add(new Period(until, before.params));
+				s.segs.sort((a, b) -> Integer.compare(a.from, b.from));
+			}
+		}
+		for (Period p : s.segs)
+		{
+			if (p.from < until)
+			{
+				p.params.put(name, value);
+			}
+		}
+		mergeSamePeriods(s, defaults);
+	}
+
+	/**
+	 * Records that the game revealed some settings for a kill, for callers that already hold the boss under {@link #update}: the first
+	 * kill each setting was read for is remembered, and a setting the boss infers (see {@code Boss.infer}) gives its first value to the
+	 * earlier kills, unless the player set them.
+	 *
+	 * @param killNo the kill the game told about
+	 * @param from   the first kill the value was given to (kills the plugin missed just before are assumed to be like this one)
+	 */
+	public static void noteReadLocked(BossState s, Boss boss, Map<String, Object> patch, int killNo, int from, Map<String, Object> defaults)
+	{
+		if (patch == null)
+		{
+			return;
+		}
+		for (Map.Entry<String, Object> e : patch.entrySet())
+		{
+			String k = e.getKey();
+			if (!boss.reads.contains(k) || s.seenFrom(k) != null || e.getValue() == null)
+			{
+				continue;
+			}
+			if (s.seen == null)
+			{
+				s.seen = new LinkedHashMap<>();
+			}
+			s.seen.put(k, killNo);
+			if (boss.infer.contains(k) && from > 1 && !setByPlayer(s, k, from))
+			{
+				setBeforeLocked(s, k, e.getValue(), from, defaults);
+			}
+		}
+	}
+
+	/**
+	 * True when a period before the kill number says what the setting is (the player set it).
+	 */
+	static boolean setByPlayer(BossState s, String name, int until)
+	{
+		for (Period p : s.segs)
+		{
+			if (p.from < until && p.params.containsKey(name))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Merges all periods into one that has the latest settings.
 	 */
 	public void collapsePeriods(String id)
@@ -495,6 +603,92 @@ public final class Ledger
 		Period p = new Period(killNo, last.params);
 		p.params.putAll(patch);
 		s.segs.add(p);
+		return true;
+	}
+
+	/**
+	 * Gives one kill its own values for some settings, leaving the kills before and after it as they were (used for what the game
+	 * reveals about a single kill, such as whether its loot went to you).  Periods are split around the kill and identical neighbours
+	 * are merged again, so nothing piles up when the value matches.
+	 *
+	 * @return true when the ledger changed
+	 */
+	public static boolean setKillParamsLocked(BossState s, int killNo, Map<String, Object> patch, Map<String, Object> defaults)
+	{
+		if (killNo < 1 || patch == null || patch.isEmpty())
+		{
+			return false;
+		}
+		s.segs.sort((a, b) -> Integer.compare(a.from, b.from));
+		int i = 0;
+		for (int j = 0; j < s.segs.size(); j++)
+		{
+			if (s.segs.get(j).from <= killNo)
+			{
+				i = j;
+			}
+		}
+		Period at = s.segs.get(i);
+		boolean differs = false;
+		for (Map.Entry<String, Object> e : patch.entrySet())
+		{
+			Object cur = at.params.containsKey(e.getKey()) ? at.params.get(e.getKey()) : defaults == null ? null : defaults.get(e.getKey());
+			if (!sameValue(cur, e.getValue()))
+			{
+				differs = true;
+			}
+		}
+		if (!differs)
+		{
+			return false;
+		}
+		Period next = i + 1 < s.segs.size() ? s.segs.get(i + 1) : null;
+		if (next == null || next.from > killNo + 1)
+		{
+			// the kills after this one keep the values they had
+			s.segs.add(i + 1, new Period(killNo + 1, at.params));
+		}
+		if (at.from == killNo)
+		{
+			at.params.putAll(patch);
+		}
+		else
+		{
+			Period mine = new Period(killNo, at.params);
+			mine.params.putAll(patch);
+			s.segs.add(i + 1, mine);
+		}
+		mergeSamePeriods(s, defaults);
+		return true;
+	}
+
+	/**
+	 * Merges neighbouring periods whose settings are the same.
+	 */
+	static void mergeSamePeriods(BossState s, Map<String, Object> defaults)
+	{
+		for (int j = s.segs.size() - 1; j > 0; j--)
+		{
+			if (sameParams(s.segs.get(j - 1).params, s.segs.get(j).params, defaults))
+			{
+				s.segs.remove(j);
+			}
+		}
+	}
+
+	private static boolean sameParams(Map<String, Object> a, Map<String, Object> b, Map<String, Object> defaults)
+	{
+		java.util.Set<String> keys = new java.util.HashSet<>(a.keySet());
+		keys.addAll(b.keySet());
+		for (String k : keys)
+		{
+			Object x = a.containsKey(k) ? a.get(k) : defaults == null ? null : defaults.get(k);
+			Object y = b.containsKey(k) ? b.get(k) : defaults == null ? null : defaults.get(k);
+			if (!sameValue(x, y))
+			{
+				return false;
+			}
+		}
 		return true;
 	}
 
@@ -627,6 +821,43 @@ public final class Ledger
 	}
 
 	/**
+	 * Whether the overview lists the boss (Settings, "Bosses to show").  Every boss is recorded either way.
+	 */
+	public synchronized boolean shown(String id)
+	{
+		return !prefs.hiddenBosses.contains(id);
+	}
+
+	/**
+	 * Shows bosses on the overview or leaves them out.  No figure depends on it, so what was worked out stays valid.
+	 */
+	public void setShown(java.util.Collection<String> ids, boolean show)
+	{
+		synchronized (this)
+		{
+			boolean changed = false;
+			for (String id : ids)
+			{
+				if (show)
+				{
+					changed |= prefs.hiddenBosses.remove(id);
+				}
+				else if (!prefs.hiddenBosses.contains(id))
+				{
+					prefs.hiddenBosses.add(id);
+					changed = true;
+				}
+			}
+			if (!changed)
+			{
+				return;
+			}
+			revision++;
+		}
+		fire(null);
+	}
+
+	/**
 	 * Remembers what the side panel shows so that it comes back the same.  It is saved with the ledger; no figure depends on it.
 	 */
 	public void setView(String sel, String tab, String scope)
@@ -648,22 +879,29 @@ public final class Ledger
 	/**
 	 * Adds what another ledger (a backup) has.  A boss this ledger knows nothing about comes over whole.  For the others the
 	 * drops with ids not yet here are added, the kill count becomes the larger of the two, and the extra tracked items come over.
+	 * Bosses the plugin leaves out come over only when this ledger does not have them yet.
 	 *
 	 * @return the number of drops added
 	 */
 	public int mergeFrom(Ledger other)
 	{
 		Map<String, BossState> theirs = new LinkedHashMap<>();
+		Map<String, String> theirRetired;
 		synchronized (other)
 		{
 			for (Map.Entry<String, BossState> e : other.bosses.entrySet())
 			{
 				theirs.put(e.getKey(), e.getValue().copy());
 			}
+			theirRetired = new LinkedHashMap<>(other.retired);
 		}
 		int added = 0;
 		synchronized (this)
 		{
+			for (Map.Entry<String, String> e : theirRetired.entrySet())
+			{
+				retired.putIfAbsent(e.getKey(), e.getValue());
+			}
 			for (Map.Entry<String, BossState> e : theirs.entrySet())
 			{
 				String id = e.getKey();
@@ -713,7 +951,9 @@ public final class Ledger
 		synchronized (this)
 		{
 			Map<String, BossState> theirs;
+			Map<String, String> theirRetired;
 			Prefs p;
+			HistoryStage h;
 			synchronized (other)
 			{
 				theirs = new LinkedHashMap<>();
@@ -721,15 +961,14 @@ public final class Ledger
 				{
 					theirs.put(e.getKey(), e.getValue().copy());
 				}
+				theirRetired = new LinkedHashMap<>(other.retired);
 				p = other.prefs.copy();
-			}
-			HistoryStage h;
-			synchronized (other)
-			{
 				h = other.history.copy();
 			}
 			bosses.clear();
 			bosses.putAll(theirs);
+			retired.clear();
+			retired.putAll(theirRetired);
 			prefs = p;
 			history = h;
 			globalRev++;
@@ -749,6 +988,22 @@ public final class Ledger
 			revision++;
 			revisions.merge(id, 1L, Long::sum);
 		}
+	}
+
+	/**
+	 * Keeps the JSON of a boss the plugin leaves out, to be written back on save.
+	 */
+	void putRetired(String id, String json)
+	{
+		synchronized (this)
+		{
+			retired.put(id, json);
+		}
+	}
+
+	synchronized Map<String, String> rawRetired()
+	{
+		return retired;
 	}
 
 	void putHistory(HistoryStage h)

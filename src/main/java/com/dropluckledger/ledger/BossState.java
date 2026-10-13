@@ -20,7 +20,7 @@ public final class BossState
 
 	/**
 	 * Plugin only: the last kill count the game showed for each kill-count label of the boss (for example the normal and
-	 * the challenge mode count of a raid).  The ledger kill count is their sum plus any kills added by hand.
+	 * the awakened count of a Desert Treasure II boss).  The ledger kill count is their sum plus any kills added by hand.
 	 */
 	public Map<String, Integer> labelKc;
 	/**
@@ -31,6 +31,17 @@ public final class BossState
 	 * Plugin only: ids of the drops recorded on those kills.
 	 */
 	public List<String> provDrops;
+	/**
+	 * Plugin only: the first kill the plugin counted from the game itself (null until it has counted one).  Kills before it came
+	 * from history or were set by hand, so what the game reveals per kill (whose loot it was, how many brothers fell) is unknown
+	 * for them; settings of that kind apply to them alone.
+	 */
+	public Integer liveFrom;
+	/**
+	 * Plugin only: for each setting the game reveals (see {@code Boss.reads}), the first kill the plugin read it for.  The kills
+	 * before it are the ones the player's own value applies to; a setting missing here was never read, so it applies to every kill.
+	 */
+	public Map<String, Integer> seen;
 
 	public BossState()
 	{
@@ -109,6 +120,14 @@ public final class BossState
 		return s;
 	}
 
+	/**
+	 * The first kill the plugin read this setting for, or null when it never has.
+	 */
+	public Integer seenFrom(String setting)
+	{
+		return seen == null ? null : seen.get(setting);
+	}
+
 	public Period lastPeriod()
 	{
 		return segs.get(segs.size() - 1);
@@ -150,6 +169,8 @@ public final class BossState
 		b.labelKc = labelKc == null ? null : new LinkedHashMap<>(labelKc);
 		b.prov = prov;
 		b.provDrops = provDrops == null ? null : new ArrayList<>(provDrops);
+		b.liveFrom = liveFrom;
+		b.seen = seen == null ? null : new LinkedHashMap<>(seen);
 		return b;
 	}
 }

@@ -181,18 +181,27 @@ final class Views
 	static final class OverviewView
 	{
 		final long rev;
+		/**
+		 * The bosses with kills or drops that the overview shows (Settings, "Bosses to show").
+		 */
 		final int tracked;
-		final List<Rank> driest;
-		final List<Rank> hottest;
+		/**
+		 * All the bosses with kills or drops, shown or not.
+		 */
+		final int active;
+		/**
+		 * The items of the shown bosses the player has been luckiest with, luckiest first: all of them (the page shows the first few).
+		 */
+		final List<Rank> spoons;
 		final List<BossRow> bosses;
 		final List<Luck.Pool> pooled;
 
-		OverviewView(long rev, int tracked, List<Rank> driest, List<Rank> hottest, List<BossRow> bosses, List<Luck.Pool> pooled)
+		OverviewView(long rev, int tracked, int active, List<Rank> spoons, List<BossRow> bosses, List<Luck.Pool> pooled)
 		{
 			this.rev = rev;
 			this.tracked = tracked;
-			this.driest = driest;
-			this.hottest = hottest;
+			this.active = active;
+			this.spoons = spoons;
 			this.bosses = bosses;
 			this.pooled = pooled;
 		}
@@ -282,6 +291,10 @@ final class Views
 		List<String> inferred = new ArrayList<>();
 		for (Row r : b.allRows())
 		{
+			if (r.flagged("hidden"))
+			{
+				continue;
+			}
 			if ("unknown".equals(r.rate))
 			{
 				unknown.add(r.name);

@@ -79,6 +79,11 @@ final class Fold extends Column
 		return open;
 	}
 
+	void setTitle(String title)
+	{
+		head.setText(title);
+	}
+
 	Component header()
 	{
 		return head;

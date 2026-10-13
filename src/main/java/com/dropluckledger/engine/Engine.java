@@ -1004,7 +1004,8 @@ public final class Engine
 	private static void put(Map<String, ItemProb> out, String name, double p, String kind, Row row)
 	{
 		ItemProb o = out.computeIfAbsent(name, k -> new ItemProb());
-		o.p = 1 - (1 - o.p) * (1 - Math.min(1, Math.max(0, p)));
+		// what the table maths leaves of an impossible drop is rounding (1e-16), not a chance
+		o.p = 1 - (1 - o.p) * (1 - (p < 1e-12 ? 0 : Math.min(1, p)));
 		if (!o.kinds.contains(kind))
 		{
 			o.kinds.add(kind);
@@ -1016,9 +1017,36 @@ public final class Engine
 	}
 
 	/**
+	 * The share of kills that pay out at all (the boss's SCALE): a boss whose loot goes to one player only pays you on the kills where
+	 * you were that player, so every item's per-kill chance is this share times its chance on a kill that pays.  1 for most bosses.
+	 */
+	public static double lootScale(Boss boss, Env env)
+	{
+		if (boss.scaleFn == null)
+		{
+			return 1;
+		}
+		return Math.min(1, Math.max(0, boss.scaleFn.eval(env)));
+	}
+
+	/**
 	 * Per-kill probability of each item (restricted to onlyNames when given).
 	 */
 	public static Map<String, ItemProb> itemProbs(Boss boss, Env env, Ctx ctx, Set<String> onlyNames)
+	{
+		Map<String, ItemProb> out = itemProbsRaw(boss, env, ctx, onlyNames);
+		double s = lootScale(boss, env);
+		if (s < 1)
+		{
+			for (ItemProb o : out.values())
+			{
+				o.p *= s;
+			}
+		}
+		return out;
+	}
+
+	private static Map<String, ItemProb> itemProbsRaw(Boss boss, Env env, Ctx ctx, Set<String> onlyNames)
 	{
 		Map<String, ItemProb> out = new LinkedHashMap<>();
 		Plan pl = plan(boss, env, ctx);
@@ -1190,7 +1218,7 @@ public final class Engine
 		{
 			need.addAll(sources);
 		}
-		Map<String, ItemProb> all = itemProbs(boss, env, ctx, need);
+		Map<String, ItemProb> all = itemProbsRaw(boss, env, ctx, need);
 		Set<String> tbl = new LinkedHashSet<>();
 		double q = 1;
 		Map<String, List<String>> src = new HashMap<>();
@@ -1243,7 +1271,7 @@ public final class Engine
 		{
 			q *= survPlan(plan(boss, env, ctx), env, tbl);
 		}
-		return 1 - q;
+		return lootScale(boss, env) * (1 - q);
 	}
 
 	// ------------------------------------------------------------------ item catalogue (static metadata)
@@ -1259,6 +1287,10 @@ public final class Engine
 		public boolean noany;
 		public int pity;
 		public String note;
+		/**
+		 * The duplicate-protection group the item is in (only the pieces held the fewest of can drop), or null.
+		 */
+		public String nodup;
 
 		ItemMeta(String name)
 		{
@@ -1361,6 +1393,10 @@ public final class Engine
 		if (r.flagged("noany"))
 		{
 			m.noany = true;
+		}
+		if (r.flagged("nodup"))
+		{
+			m.nodup = r.attr("nodup");
 		}
 		if (r.seq != null)
 		{

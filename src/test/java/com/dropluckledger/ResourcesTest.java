@@ -2,6 +2,7 @@ package com.dropluckledger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import com.dropluckledger.engine.Data;
@@ -50,7 +51,12 @@ public class ResourcesTest
 		{
 			assertNotNull(in);
 			Data data = Data.load(new Gson(), in);
-			assertEquals(70, data.bosses.size());
+			// the web page's bosses but the raids, the Royal Titans and Wintertodt (src/plugin-exclude.txt in the web project)
+			assertEquals(64, data.bosses.size());
+			for (String left : new String[]{"chambers-of-xeric", "theatre-of-blood", "tombs-of-amascut", "royal-titans", "wintertodt"})
+			{
+				assertNull(left, data.boss(left));
+			}
 		}
 	}
 }

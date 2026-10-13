@@ -47,9 +47,28 @@ public interface Game
 	int realLevel(Skill skill);
 
 	/**
-	 * The player's experience in a skill.
+	 * A varbit's value: what the game tells the client about the player's state (0 when not set).
 	 */
-	int experience(Skill skill);
+	default int varbit(int id)
+	{
+		return 0;
+	}
+
+	/**
+	 * True on a members' world.
+	 */
+	default boolean isMembersWorld()
+	{
+		return true;
+	}
+
+	/**
+	 * False when the player has switched off RuneLite's Loot Tracker plugin, whose events carry the drops.
+	 */
+	default boolean isLootTrackerOn()
+	{
+		return true;
+	}
 
 	// ------------------------------------------------------------------ the game's screens
 

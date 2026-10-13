@@ -26,7 +26,9 @@ public final class FakeGame implements Game
 	public String playerName = "Tester";
 	public int tick = 1000;
 	public final Map<Skill, Integer> levels = new EnumMap<>(Skill.class);
-	public final Map<Skill, Integer> xp = new EnumMap<>(Skill.class);
+	public final Map<Integer, Integer> varbits = new HashMap<>();
+	public boolean members = true;
+	public boolean lootTracker = true;
 
 	// the screen
 	public final Map<Integer, Node> widgets = new HashMap<>();
@@ -126,9 +128,21 @@ public final class FakeGame implements Game
 	}
 
 	@Override
-	public int experience(Skill skill)
+	public int varbit(int id)
 	{
-		return xp.getOrDefault(skill, 0);
+		return varbits.getOrDefault(id, 0);
+	}
+
+	@Override
+	public boolean isMembersWorld()
+	{
+		return members;
+	}
+
+	@Override
+	public boolean isLootTrackerOn()
+	{
+		return lootTracker;
 	}
 
 	// ------------------------------------------------------------------ the screen

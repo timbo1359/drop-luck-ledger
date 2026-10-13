@@ -87,21 +87,18 @@ public class HistoryPlannerTest
 	{
 		HistoryInput in = new HistoryInput();
 		in.addKc("Chambers of Xeric", 50, "Boss Kill Log");
-		in.addKc("Chambers of Xeric Challenge Mode", 12, "Boss Kill Log");
 		in.addKc("Duke Sucellus", 100, "Boss Kill Log");
 		in.addKc("Awakened Duke Sucellus", 30, "Boss Kill Log");
 		Plan plan = planner.plan(in);
-		assertEquals(62, kcRow(plan, "chambers-of-xeric").to);
+		// the raids are not in the plugin
+		assertNull(kcRow(plan, "chambers-of-xeric"));
+		assertEquals(Arrays.asList("Chambers of Xeric 50"), plan.kcSkipped);
 		assertEquals(130, kcRow(plan, "duke-sucellus").to);
 		planner.apply(plan);
-		BossState c = ledger.copyOf("chambers-of-xeric");
-		assertEquals(62, c.kc);
-		assertEquals(2, c.segs.size());
-		assertEquals(1, c.segs.get(0).from);
-		assertEquals(0, ((Number) c.paramsAt(50).get("cm")).intValue());
-		assertEquals(51, c.segs.get(1).from);
-		assertEquals(1, ((Number) c.paramsAt(62).get("cm")).intValue());
 		BossState d = ledger.copyOf("duke-sucellus");
+		assertEquals(130, d.kc);
+		assertEquals(2, d.segs.size());
+		assertEquals(1, d.segs.get(0).from);
 		assertEquals(101, d.segs.get(1).from);
 		assertEquals(1, ((Number) d.paramsAt(130).get("awakened")).intValue());
 		assertEquals(0, ((Number) d.paramsAt(100).get("awakened")).intValue());
@@ -215,41 +212,41 @@ public class HistoryPlannerTest
 	}
 
 	@Test
-	public void aStackOfBoltRacksIsNotThreeThousandDrops()
+	public void aStackOfThrownaxesIsNotThousandsOfDrops()
 	{
-		// the Collection Log and the Loot Tracker keep the running total of the stack, not the number of chests it came from
+		// the Collection Log and the Loot Tracker keep the running total of the stack, not the number of kills it came from
 		HistoryInput in = new HistoryInput();
-		in.addKc("Barrows Chests", 1000, "Boss Kill Log");
-		in.addOwned(null, "Barrows Chests", "Bolt rack", 3750, "Collection log");
+		in.addKc("Alchemical Hydra", 1000, "Boss Kill Log");
+		in.addOwned(null, "Alchemical Hydra", "Dragon thrownaxe", 75000, "Collection log");
 		Plan plan = planner.plan(in);
-		ItemRow r = itemRow(plan, "barrows", "Bolt rack");
+		ItemRow r = itemRow(plan, "alchemical-hydra", "Dragon thrownaxe");
 		assertNotNull(r);
 		assertEquals(100, r.want);
-		assertEquals(3750, r.quantity);
+		assertEquals(75000, r.quantity);
 		assertTrue(r.estimated());
 		assertEquals(100, r.add);
 		planner.apply(plan);
-		assertEquals(100, ledger.copyOf("barrows").copies("Bolt rack"));
+		assertEquals(100, ledger.copyOf("alchemical-hydra").copies("Dragon thrownaxe"));
 		// and the same total from the Loot Tracker, which names the boss
 		HistoryInput exact = new HistoryInput();
-		exact.addOwned("barrows", null, "Bolt rack", 3750, "Loot Tracker");
-		ItemRow e = itemRow(planner.plan(exact), "barrows", "Bolt rack");
+		exact.addOwned("alchemical-hydra", null, "Dragon thrownaxe", 75000, "Loot Tracker");
+		ItemRow e = itemRow(planner.plan(exact), "alchemical-hydra", "Dragon thrownaxe");
 		assertEquals(100, e.want);
-		assertEquals(3750, e.quantity);
+		assertEquals(75000, e.quantity);
 		assertEquals(0, e.add); // already in the ledger from the first import
 	}
 
 	@Test
 	public void anEarlierImportThatCountedAStackAsDropsIsCorrected()
 	{
-		// the first version of the importer took 3,750 bolt racks as 200 drops (its cap)
-		ledger.setKc("barrows", 1000);
-		ledger.logDrop("barrows", "Bolt rack", 50, 1, null, Drop.SRC_MANUAL);
-		ledger.addOwned("barrows", "Bolt rack", 200);
+		// the first version of the importer took a stack of 75,000 thrownaxes as 200 drops (its cap)
+		ledger.setKc("alchemical-hydra", 1000);
+		ledger.logDrop("alchemical-hydra", "Dragon thrownaxe", 50, 1, null, Drop.SRC_MANUAL);
+		ledger.addOwned("alchemical-hydra", "Dragon thrownaxe", 200);
 		HistoryInput in = new HistoryInput();
-		in.addOwned(null, "Barrows Chests", "Bolt rack", 3750, "Collection log");
+		in.addOwned(null, "Alchemical Hydra", "Dragon thrownaxe", 75000, "Collection log");
 		Plan plan = planner.plan(in);
-		ItemRow r = itemRow(plan, "barrows", "Bolt rack");
+		ItemRow r = itemRow(plan, "alchemical-hydra", "Dragon thrownaxe");
 		assertEquals(100, r.want);
 		assertEquals(201, r.have);
 		assertEquals(0, r.add);
@@ -260,10 +257,10 @@ public class HistoryPlannerTest
 		int[] done = planner.apply(plan);
 		assertEquals(0, done[1]);
 		assertEquals(101, done[2]);
-		BossState b = ledger.copyOf("barrows");
-		assertEquals(100, b.copies("Bolt rack"));
+		BossState b = ledger.copyOf("alchemical-hydra");
+		assertEquals(100, b.copies("Dragon thrownaxe"));
 		// the copy that was logged by hand, with its kill number, is still there
-		assertEquals(1, b.drops.stream().filter(d -> d.kc != null && d.item.equals("Bolt rack")).count());
+		assertEquals(1, b.drops.stream().filter(d -> d.kc != null && d.item.equals("Dragon thrownaxe")).count());
 		// and a second run has nothing left to do
 		assertTrue(planner.plan(in).isEmpty());
 	}

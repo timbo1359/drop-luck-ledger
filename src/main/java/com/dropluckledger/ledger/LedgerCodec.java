@@ -66,11 +66,22 @@ public final class LedgerCodec
 			po.addProperty("sel", p.sel);
 			po.addProperty("tab", p.tab);
 			po.addProperty("images", p.images);
+			if (!p.hiddenBosses.isEmpty())
+			{
+				po.add("hiddenBosses", strings(p.hiddenBosses));
+			}
 			root.add("prefs", po);
 			JsonObject bo = new JsonObject();
 			for (Map.Entry<String, BossState> e : ledger.rawBosses().entrySet())
 			{
 				bo.add(e.getKey(), bossTree(e.getValue()));
+			}
+			for (Map.Entry<String, String> e : ledger.rawRetired().entrySet())
+			{
+				if (!bo.has(e.getKey()))
+				{
+					bo.add(e.getKey(), new JsonParser().parse(e.getValue()));
+				}
 			}
 			root.add("bosses", bo);
 			HistoryStage h = ledger.rawHistory();
@@ -180,6 +191,23 @@ public final class LedgerCodec
 		{
 			o.add("provDrops", strings(b.provDrops));
 		}
+		if (b.liveFrom != null)
+		{
+			o.addProperty("liveFrom", b.liveFrom);
+		}
+		if ((b.seen != null && !b.seen.isEmpty()) || b.liveFrom != null)
+		{
+			// written even when empty once the plugin counts kills itself, so an older ledger is told apart from one that read nothing
+			JsonObject sn = new JsonObject();
+			if (b.seen != null)
+			{
+				for (Map.Entry<String, Integer> e : b.seen.entrySet())
+				{
+					sn.addProperty(e.getKey(), e.getValue());
+				}
+			}
+			o.add("seen", sn);
+		}
 		return o;
 	}
 
@@ -196,7 +224,8 @@ public final class LedgerCodec
 	// ------------------------------------------------------------------ reading
 
 	/**
-	 * Reads a backup.  Unknown bosses and settings are dropped, damaged entries are repaired or skipped.
+	 * Reads a backup.  Bosses the plugin leaves out are kept as they are (written back, never shown), unknown settings are
+	 * dropped, damaged entries are repaired or skipped.
 	 */
 	public static Ledger fromJson(Data data, String json) throws FormatException
 	{
@@ -237,15 +266,28 @@ public final class LedgerCodec
 			String sel = text(po.get("sel"), "");
 			prefs.sel = data.boss(sel) != null ? sel : "";
 			prefs.tab = text(po.get("tab"), "tracker");
+			for (String id : stringList(po.get("hiddenBosses")))
+			{
+				if (data.boss(id) != null && !prefs.hiddenBosses.contains(id))
+				{
+					prefs.hiddenBosses.add(id);
+				}
+			}
 		}
 		l.putPrefs(prefs);
 		if (root.has("bosses") && root.get("bosses").isJsonObject())
 		{
 			for (Map.Entry<String, JsonElement> e : root.getAsJsonObject("bosses").entrySet())
 			{
-				Boss boss = data.boss(e.getKey());
-				if (boss == null || !e.getValue().isJsonObject())
+				if (!e.getValue().isJsonObject())
 				{
+					continue;
+				}
+				Boss boss = data.boss(e.getKey());
+				if (boss == null)
+				{
+					// a boss the plugin leaves out (the raids, for one, which the web app has): kept as it is and written back
+					l.putRetired(e.getKey(), e.getValue().toString());
 					continue;
 				}
 				l.putBoss(e.getKey(), sanitizeBoss(l, boss, e.getValue().getAsJsonObject()));
@@ -396,8 +438,61 @@ public final class LedgerCodec
 		b.prov = prov > 0 ? prov : null;
 		List<String> pd = stringList(x.get("provDrops"));
 		b.provDrops = pd.isEmpty() ? null : pd;
+		int live = clamp(x.get("liveFrom"), 0, 100_000_000, 0);
+		b.liveFrom = live > 0 ? live : null;
+		if (x.has("seen") && x.get("seen").isJsonObject())
+		{
+			Map<String, Integer> sn = new LinkedHashMap<>();
+			for (Map.Entry<String, JsonElement> se : x.getAsJsonObject("seen").entrySet())
+			{
+				int k = clamp(se.getValue(), 0, 100_000_000, 0);
+				if (k > 0 && boss.reads.contains(se.getKey()))
+				{
+					sn.put(se.getKey(), k);
+				}
+			}
+			b.seen = sn.isEmpty() ? null : sn;
+		}
+		else if (b.liveFrom != null && !boss.reads.isEmpty())
+		{
+			readSinceLiveFrom(b, boss);
+		}
 		b.kc = Math.max(b.kc, b.maxDropKc());
 		return b;
+	}
+
+	/**
+	 * A ledger from before the plugin remembered which kills it read each setting for: it read them from the first kill it counted.
+	 * The settings the boss infers then give the earlier kills their first value read, as they would have in a new ledger.
+	 */
+	private static void readSinceLiveFrom(BossState b, Boss boss)
+	{
+		Map<String, Object> defaults = com.dropluckledger.engine.Engine.defaultParams(boss);
+		b.seen = new LinkedHashMap<>();
+		for (String r : boss.reads)
+		{
+			b.seen.put(r, b.liveFrom);
+		}
+		for (String r : boss.infer)
+		{
+			if (b.liveFrom <= 1 || Ledger.setByPlayer(b, r, b.liveFrom))
+			{
+				continue;
+			}
+			Object first = null;
+			for (Period p : b.segs)
+			{
+				if (p.from >= b.liveFrom && p.params.containsKey(r))
+				{
+					first = p.params.get(r);
+					break;
+				}
+			}
+			if (first != null)
+			{
+				Ledger.setBeforeLocked(b, r, first, b.liveFrom, defaults);
+			}
+		}
 	}
 
 	/**

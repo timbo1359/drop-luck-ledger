@@ -221,7 +221,8 @@ final class ItemCard extends Column
 		}
 		else
 		{
-			String rate = a.pNext > 0 ? Fmt.rate(a.pNext) : "not droppable";
+			// a chance of 0 is about the current settings (another reward, another mode) or the duplicate protection, not the item
+			String rate = a.pNext > 0 ? Fmt.rate(a.pNext) : a.once && a.O > 0 ? "once only" : protectedNow(v) ? "after the set" : "not now";
 			if (f.pooled)
 			{
 				left = "pooled · " + f.got + " vs " + (f.expected == null ? "—" : Fmt.expected(f.expected)) + " expected";
@@ -286,10 +287,21 @@ final class ItemCard extends Column
 		return String.join(" · ", t);
 	}
 
-	private static String rateOf(Luck.ItemAnalysis a)
+	private static String rateOf(Views.ItemView v)
 	{
-		String rate = a.pNext > 0 ? Fmt.rate(a.pNext) : a.once && a.O > 0 ? "once only" : "not droppable with these settings";
+		Luck.ItemAnalysis a = v.a;
+		String rate = a.pNext > 0 ? Fmt.rate(a.pNext) : a.once && a.O > 0 ? "once only"
+			: protectedNow(v) ? "0 for now: duplicate protection gives the pieces of the set you have fewer of first"
+			: "0 with the current settings (another reward or mode)";
 		return a.seq != null ? rate + " · slot hits so far " + a.hits : rate;
+	}
+
+	/**
+	 * True when the item cannot drop now because of duplicate protection: other pieces of its set come first.
+	 */
+	private static boolean protectedNow(Views.ItemView v)
+	{
+		return v.meta != null && v.meta.nodup != null && v.a.pNext == 0 && v.a.O > 0;
 	}
 
 	/**
@@ -311,7 +323,7 @@ final class ItemCard extends Column
 		}
 		b.append("<br><b>").append(Fmt.pct(f.chance())).append("</b> chance of ").append(f.got > 0 ? "copy " + (f.got + 1) : "one")
 			.append(" by now, from all your kills at the drop rate. ").append(Look.dim("Kills past the rate carry over to the next one."));
-		b.append("<br>Per kill here: ").append(Look.esc(rateOf(a)));
+		b.append("<br>Per kill here: ").append(Look.esc(rateOf(v)));
 		if (v.pool != null)
 		{
 			b.append(" ").append(Look.dim("(each boss has its own rate; the luck below joins them all)"));
@@ -373,7 +385,7 @@ final class ItemCard extends Column
 	{
 		Luck.ItemAnalysis a = v.a;
 		List<String[]> rows = new ArrayList<>();
-		rows.add(new String[] {"Per kill here", Look.esc(rateOf(a))});
+		rows.add(new String[] {"Per kill here", Look.esc(rateOf(v))});
 		rows.add(new String[] {"Received vs expected", a.O + " vs " + (a.expected == null ? "—" : Fmt.expected(a.expected))});
 		if (!done && !Double.isNaN(f.chance()))
 		{

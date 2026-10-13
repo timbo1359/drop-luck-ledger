@@ -11,6 +11,7 @@ import net.runelite.api.GameState;
 import net.runelite.api.ItemComposition;
 import net.runelite.api.Player;
 import net.runelite.api.Skill;
+import net.runelite.api.WorldType;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.chat.ChatMessageManager;
@@ -28,6 +29,9 @@ import net.runelite.http.api.item.ItemPrice;
  */
 public final class RuneLiteGame implements Game
 {
+	private static final String RUNELITE_GROUP = "runelite";
+	private static final String LOOT_TRACKER_KEY = "loottrackerplugin";
+
 	private final Client client;
 	private final ClientThread clientThread;
 	private final ItemManager itemManager;
@@ -83,9 +87,22 @@ public final class RuneLiteGame implements Game
 	}
 
 	@Override
-	public int experience(Skill skill)
+	public int varbit(int id)
 	{
-		return client.getSkillExperience(skill);
+		return client.getVarbitValue(id);
+	}
+
+	@Override
+	public boolean isMembersWorld()
+	{
+		return client.getWorldType().contains(WorldType.MEMBERS);
+	}
+
+	@Override
+	public boolean isLootTrackerOn()
+	{
+		// RuneLite keeps whether a plugin is on under its class name in the "runelite" group; unset means its default (on)
+		return !"false".equals(configManager.getConfiguration(RUNELITE_GROUP, LOOT_TRACKER_KEY));
 	}
 
 	// ------------------------------------------------------------------ the game's screens

@@ -327,14 +327,19 @@ public class TrackerTest
 	}
 
 	@Test
-	public void raidLevelComesFromTheRewardMetadata() throws Exception
+	public void theBossesThePluginLeavesOutAreIgnored() throws Exception
 	{
 		start();
 		login(111);
-		loot("Tombs of Amascut", new int[]{425, 3, 12000}, 30001, 1);
-		BossState t = boss("tombs-of-amascut");
-		assertEquals(1, t.kc);
-		assertEquals(425, ((Number) t.lastPeriod().params.get("raidLevel")).intValue());
+		say("Your completed Chambers of Xeric count is: <col=ff0000>51</col>.");
+		say("Your completed Theatre of Blood count is: <col=ff0000>12</col>.");
+		say("Your Tombs of Amascut: Expert Mode kill count is: <col=ff0000>7</col>.");
+		say("Your Royal Titans kill count is: <col=ff0000>10</col>.");
+		say("Your subdued Wintertodt count is: <col=ff0000>300</col>.");
+		loot("Tombs of Amascut", new int[]{425, 3, 12000}, COINS, 1);
+		loot("Branda the Fire Queen", null, COINS, 1);
+		loot("Reward cart (Wintertodt)", 99, COINS, 1);
+		assertTrue(tracker.core().ledger.activeBosses().isEmpty());
 	}
 
 	@Test
@@ -342,15 +347,12 @@ public class TrackerTest
 	{
 		game.levels.put(Skill.FISHING, 77);
 		game.levels.put(Skill.FARMING, 64);
-		game.xp.put(Skill.FIREMAKING, 200_000_000);
 		start();
 		login(111);
 		loot("Reward pool (Tempoross)", 81, 30002, 1);
 		assertEquals(77, ((Number) boss("tempoross").lastPeriod().params.get("fishing")).intValue());
 		loot("Hespori", null, 30003, 1);
 		assertEquals(64, ((Number) boss("hespori").lastPeriod().params.get("farming")).intValue());
-		loot("Reward cart (Wintertodt)", 99, COINS, 1);
-		assertEquals(1, ((Number) boss("wintertodt").lastPeriod().params.get("fm200")).intValue());
 	}
 
 	@Test

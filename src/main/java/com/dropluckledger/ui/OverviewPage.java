@@ -2,6 +2,7 @@ package com.dropluckledger.ui;
 
 import com.dropluckledger.engine.Catalog;
 import com.dropluckledger.engine.Data.Boss;
+import com.dropluckledger.engine.Engine;
 import com.dropluckledger.engine.Luck;
 import com.dropluckledger.ledger.Ledger;
 import java.awt.BorderLayout;
@@ -9,9 +10,11 @@ import java.awt.Color;
 import java.awt.Component;
 import java.awt.FlowLayout;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import javax.swing.JButton;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
@@ -26,6 +29,12 @@ import javax.swing.event.DocumentListener;
 @SuppressWarnings("serial")
 final class OverviewPage extends Column
 {
+	static final String SPOONS = "Biggest Spoons";
+	/**
+	 * Spoons listed before "Show all".
+	 */
+	static final int SPOONS_SHOWN = 10;
+
 	private final Ctx ctx;
 	private final Ledger ledger;
 	private final Jobs.Slot<Views.OverviewView> job;
@@ -33,6 +42,7 @@ final class OverviewPage extends Column
 	private final Column results = new Column(8);
 	private final Map<String, Boolean> openGroups = new LinkedHashMap<>();
 	private boolean openHelp;
+	private boolean allSpoons;
 	private Views.OverviewView view;
 
 	OverviewPage(Ctx ctx)
@@ -109,26 +119,55 @@ final class OverviewPage extends Column
 		{
 			parts.add(Look.wrapped("Working it out…", Look.PAGE_TEXT, Look.small(), Look.MUTED));
 		}
-		else if (view.tracked == 0)
+		else if (view.active == 0)
 		{
 			parts.add(empty());
 		}
 		else
 		{
-			parts.add(Look.muted(view.tracked + " boss" + (view.tracked == 1 ? "" : "es") + " tracked · " + ctx.ledger().data().bosses.size() + " available"));
-			parts.add(ranking("Driest so far", "The items you are furthest behind on. The percentage is the chance, from all your kills, that you would "
-				+ "have the next copy by now, so a high figure means you are overdue. Hover a line for the figures; click to open the boss.", view.driest, "Nothing is this dry yet."));
-			parts.add(ranking("Running hot", "The items you have been luckiest with. The percentage is the chance, from all your kills, that you would "
-				+ "have the next copy by now, so a low figure means you are well ahead. Hover a line for the figures; click to open the boss.", view.hottest, "Nothing is running hot yet."));
-			parts.add(myBosses(view));
-			if (!view.pooled.isEmpty())
+			parts.add(Look.muted(counts(view)));
+			if (view.tracked == 0)
 			{
-				parts.add(shared(view));
+				parts.add(noneShown());
+			}
+			else
+			{
+				parts.add(spoons(view));
+				parts.add(myBosses(view));
+				if (!view.pooled.isEmpty())
+				{
+					parts.add(shared(view));
+				}
 			}
 		}
 		parts.add(allBosses());
 		parts.add(help());
 		Swap.into(results, parts);
+	}
+
+	/**
+	 * "4 bosses tracked · 64 available", or with bosses left out under Settings "4 bosses tracked · 4 of 64 shown".
+	 */
+	private String counts(Views.OverviewView v)
+	{
+		int total = ledger.data().bosses.size();
+		int hidden = ledger.prefs().hiddenBosses.size();
+		String tracked = v.tracked + " boss" + (v.tracked == 1 ? "" : "es") + " tracked · ";
+		return tracked + (hidden == 0 ? total + " available" : (total - hidden) + " of " + total + " shown");
+	}
+
+	/**
+	 * The player has kills, but none at the bosses ticked to show.
+	 */
+	private JComponent noneShown()
+	{
+		Column c = new Column(6);
+		c.add(Look.wrapped("None of the bosses you have kills at are ticked under Settings, Bosses to show. Their kills and drops are still recorded.",
+			Look.PAGE_TEXT, Look.small(), Look.MUTED));
+		JButton b = Look.button("Choose bosses…");
+		b.addActionListener(e -> ctx.openSettings());
+		c.add(b);
+		return c;
 	}
 
 	private JComponent empty()
@@ -161,18 +200,38 @@ final class OverviewPage extends Column
 		return p;
 	}
 
-	private JComponent ranking(String title, String help, List<Views.Rank> rows, String none)
+	/**
+	 * The items the player has been luckiest with: the first few, and the rest on request.
+	 */
+	private JComponent spoons(Views.OverviewView v)
 	{
 		Column c = new Column(3);
-		c.add(heading(title, help));
+		c.add(heading(SPOONS, "The items you have been luckiest with, luckiest first: copies that came ahead of the drop rate. Under each item: the boss, "
+			+ "and the copies you got against the copies your kills would give on average. The percentage is the chance, from all your kills, that you "
+			+ "would have the next copy by now, so a low figure means you are well ahead. Hover a line for the figures; click to open the boss."));
+		List<Views.Rank> rows = v.spoons;
 		if (rows.isEmpty())
 		{
-			c.add(Look.muted(none));
+			c.add(Look.wrapped("No spoons yet. Items you get ahead of the drop rate show up here.", Look.PAGE_TEXT, Look.small(), Look.MUTED));
 			return c;
 		}
-		for (Views.Rank r : rows)
+		int shown = allSpoons ? rows.size() : Math.min(SPOONS_SHOWN, rows.size());
+		for (int i = 0; i < shown; i++)
 		{
-			c.add(rankRow(r));
+			c.add(rankRow(rows.get(i)));
+		}
+		if (rows.size() > SPOONS_SHOWN)
+		{
+			JButton more = Look.link(allSpoons ? "Show fewer" : "Show all " + rows.size());
+			more.addActionListener(e ->
+			{
+				allSpoons = !allSpoons;
+				build();
+			});
+			JPanel p = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+			p.setOpaque(false);
+			p.add(more);
+			c.add(p);
 		}
 		return c;
 	}
@@ -184,7 +243,8 @@ final class OverviewPage extends Column
 		JPanel row = new JPanel(new BorderLayout(6, 2));
 		row.setBackground(Look.CARD);
 		row.setBorder(Look.pad(3, 6, 3, 6));
-		JLabel name = new JLabel(Look.html(126, Look.esc(r.item) + "<br>" + Look.dim(Look.esc(r.where))));
+		// how big the spoon is: the copies received against the copies expected from the kills made
+		JLabel name = new JLabel(Look.html(126, Look.esc(r.item) + "<br>" + Look.dim(Look.esc(r.where) + " · " + r.got + " of " + Fmt.expected(r.expected))));
 		name.setFont(Look.small());
 		name.setForeground(Look.TEXT);
 		ItemIcon.set(name, ctx.icons(), r.item, ctx.pictures(), 24, 22);
@@ -318,10 +378,18 @@ final class OverviewPage extends Column
 	{
 		Column c = new Column(4);
 		c.add(heading("All bosses", null));
+		Set<String> hidden = new HashSet<>(ledger.prefs().hiddenBosses);
 		Map<String, List<Boss>> byCat = new LinkedHashMap<>();
 		for (Boss b : Catalog.ordered(ledger.data()))
 		{
-			byCat.computeIfAbsent(b.cat, k -> new ArrayList<>()).add(b);
+			if (!hidden.contains(b.id))
+			{
+				byCat.computeIfAbsent(b.cat, k -> new ArrayList<>()).add(b);
+			}
+		}
+		if (byCat.isEmpty())
+		{
+			c.add(Look.wrapped("Every boss is unticked under Settings, Bosses to show.", Look.PAGE_TEXT, Look.small(), Look.MUTED));
 		}
 		for (Map.Entry<String, List<Boss>> e : byCat.entrySet())
 		{
@@ -355,6 +423,8 @@ final class OverviewPage extends Column
 	{
 		List<Component> out = new ArrayList<>();
 		List<Component> hits = new ArrayList<>();
+		Set<String> hidden = new HashSet<>(ledger.prefs().hiddenBosses);
+		int hiddenHits = 0;
 		for (Boss b : Catalog.ordered(ledger.data()))
 		{
 			boolean match = b.name.toLowerCase().contains(q);
@@ -365,16 +435,20 @@ final class OverviewPage extends Column
 			String viaItem = null;
 			if (!match)
 			{
-				for (String n : b.meta().keySet())
+				for (Map.Entry<String, Engine.ItemMeta> e : b.meta().entrySet())
 				{
-					if (n.toLowerCase().contains(q))
+					if (!e.getValue().hidden && e.getKey().toLowerCase().contains(q))
 					{
-						viaItem = n;
+						viaItem = e.getKey();
 						break;
 					}
 				}
 			}
-			if (match || viaItem != null)
+			if ((match || viaItem != null) && hidden.contains(b.id))
+			{
+				hiddenHits++;
+			}
+			else if (match || viaItem != null)
 			{
 				JComponent row = bossButton(b);
 				if (viaItem != null)
@@ -392,7 +466,8 @@ final class OverviewPage extends Column
 		}
 		if (hits.isEmpty())
 		{
-			out.add(Look.wrapped("No boss or item matches \"" + Look.esc(search.getText().trim()) + "\".", Look.PAGE_TEXT, Look.small(), Look.MUTED));
+			out.add(Look.wrapped("No boss or item matches \"" + Look.esc(search.getText().trim()) + "\"" + (hiddenHits == 0 ? "." : " among the bosses you show."),
+				Look.PAGE_TEXT, Look.small(), Look.MUTED));
 		}
 		else
 		{
@@ -402,6 +477,11 @@ final class OverviewPage extends Column
 				c.add(h);
 			}
 			out.add(c);
+		}
+		if (hiddenHits > 0)
+		{
+			out.add(Look.wrapped(hiddenHits + " boss" + (hiddenHits == 1 ? "" : "es") + " you have unticked under Settings, Bosses to show, also match"
+				+ (hiddenHits == 1 ? "es" : "") + ".", Look.PAGE_TEXT, Look.small(), Look.MUTED));
 		}
 		return out;
 	}
@@ -419,10 +499,12 @@ final class OverviewPage extends Column
 		body.add(Look.wrapped("<b>Click an item</b> to see the figures behind it: the chance of at least one in all your kills, the dry streak since your last copy, "
 			+ "the next " + ledger.prefs().window + " kills, and a chart. <b>Dry streak</b> is how long you have gone since your last copy; it says nothing about your next kill, "
 			+ "which has the same chance whenever your last drop came (apart from drops with pity or ramping rates).", w, Look.small(), Look.TEXT));
-		body.add(Look.wrapped("<b>Settings that change a rate</b> (task, Combat Achievements, team size, raid level…) live under Boss settings. "
+		body.add(Look.wrapped("<b>Biggest Spoons</b> lists the items you have been luckiest with, luckiest first. <b>Bosses to show</b> in Settings picks the "
+			+ "bosses this page lists; the kills and drops of the others are still recorded.", w, Look.small(), Look.TEXT));
+		body.add(Look.wrapped("<b>Settings that change a rate</b> (task, Combat Achievements, team size, your share of the damage…) live under Boss settings. "
 			+ "Use \"new kills only\" if a setting changed part-way through your kills.", w, Look.small(), Look.TEXT));
 		body.add(Look.wrapped("<b>Importing.</b> No source records which kill each past drop came on. Your game history brings in kill counts and the items you own; "
-			+ "those count towards your luck, but they have no kill number, so no dry streak is shown until you add one. Items that drop in stacks (bolt racks, frozen tears) "
+			+ "those count towards your luck, but they have no kill number, so no dry streak is shown until you add one. Items that drop in stacks (huasca seeds, venom sacs) "
 			+ "are turned into an estimated number of drops.", w, Look.small(), Look.TEXT));
 		body.add(Look.wrapped("<b>Accuracy.</b> Rates come from the OSRS Wiki drop tables, checked twice. Each boss page lists anything that could not be captured.",
 			w, Look.small(), Look.TEXT));

@@ -415,6 +415,12 @@ public final class Luck
 		final Dep dep;
 		final List<Seg> segs;
 		final List<Map<String, Object>> segEnv = new ArrayList<>();
+		/**
+		 * A key for each period's settings: periods with the same settings share their chances (a boss whose setting the game reveals
+		 * for every kill can have hundreds of periods but only a few different settings).
+		 */
+		final List<String> segKey = new ArrayList<>();
+		private final int[] segFrom;
 		final Map<String, Held> byName = new HashMap<>();
 		final Map<String, Double> globals;
 		private final Map<String, Double> memo = new HashMap<>();
@@ -432,14 +438,26 @@ public final class Luck
 			}
 			ss.sort((a, b) -> Integer.compare(a.from, b.from));
 			this.segs = ss;
-			for (Seg s : ss)
+			segFrom = new int[ss.size()];
+			Map<String, String> keys = new HashMap<>();
+			for (int i = 0; i < ss.size(); i++)
 			{
+				Seg s = ss.get(i);
+				segFrom[i] = s.from;
 				Map<String, Object> m = Engine.defaultParams(boss);
 				if (s.params != null)
 				{
 					m.putAll(s.params);
 				}
 				segEnv.add(m);
+				String sig = new java.util.TreeMap<>(m).toString();
+				String key = keys.get(sig);
+				if (key == null)
+				{
+					key = "s" + keys.size();
+					keys.put(sig, key);
+				}
+				segKey.add(key);
 			}
 			for (DropRec d : st.drops)
 			{
@@ -462,12 +480,21 @@ public final class Luck
 
 		private int segIdx(int k)
 		{
+			// the last period starting at or before kill k (the first period when none does)
+			int lo = 0;
+			int hi = segFrom.length - 1;
 			int i = 0;
-			for (int j = 0; j < segs.size(); j++)
+			while (lo <= hi)
 			{
-				if (segs.get(j).from <= k)
+				int mid = (lo + hi) >>> 1;
+				if (segFrom[mid] <= k)
 				{
-					i = j;
+					i = mid;
+					lo = mid + 1;
+				}
+				else
+				{
+					hi = mid - 1;
 				}
 			}
 			return i;
@@ -552,7 +579,7 @@ public final class Luck
 			{
 				key.append(names.get(0));
 			}
-			key.append('|').append(si).append('|').append(kcE).append('|').append(sig).append('|').append(since);
+			key.append('|').append(segKey.get(si)).append('|').append(kcE).append('|').append(sig).append('|').append(since);
 			String ks = key.toString();
 			Double hit = memo.get(ks);
 			if (hit != null)
@@ -606,6 +633,160 @@ public final class Luck
 		{
 			return pAtImpl(names, true, k, null);
 		}
+
+		private final Map<String, List<String>> relatedCache = new HashMap<>();
+
+		/**
+		 * The items whose copies can change the chances of a no-duplicate group: the owned-dependent items of the tables the group is in
+		 * (and of the pre-roll tables, when the group is in a base table).
+		 */
+		List<String> relatedOf(List<String> group)
+		{
+			String gk = String.join("\u0001", group);
+			List<String> rel = relatedCache.get(gk);
+			if (rel != null)
+			{
+				return rel;
+			}
+			Set<String> gs = new LinkedHashSet<>(group);
+			Set<String> out = new LinkedHashSet<>(group);
+			boolean inBase = false;
+			for (Table t : boss.tables)
+			{
+				List<Row> rows = tableRows(t);
+				boolean has = false;
+				for (Row r : rows)
+				{
+					has |= gs.contains(r.name);
+				}
+				if (!has)
+				{
+					continue;
+				}
+				inBase |= !t.pre && !t.par;
+				for (Row r : rows)
+				{
+					if (dep.ownedNames.contains(r.name))
+					{
+						out.add(r.name);
+					}
+				}
+			}
+			if (inBase)
+			{
+				for (Table t : boss.tables)
+				{
+					if (t.pre)
+					{
+						for (Row r : tableRows(t))
+						{
+							if (dep.ownedNames.contains(r.name))
+							{
+								out.add(r.name);
+							}
+						}
+					}
+				}
+			}
+			rel = new ArrayList<>(out);
+			relatedCache.put(gk, rel);
+			return rel;
+		}
+
+		private static List<Row> tableRows(Table t)
+		{
+			List<Row> rows = new ArrayList<>(t.items);
+			for (Sub sb : t.subs)
+			{
+				rows.addAll(sb.items);
+			}
+			return rows;
+		}
+
+		private String sinceSig(int k)
+		{
+			StringBuilder since = new StringBuilder();
+			boolean first = true;
+			for (Map.Entry<String, Integer> e : dep.pity.entrySet())
+			{
+				if (!first)
+				{
+					since.append(',');
+				}
+				first = false;
+				since.append(Math.min(e.getValue(), k - 1 - lastBefore(e.getKey(), k)));
+			}
+			return since.toString();
+		}
+
+		/**
+		 * What, besides the group's own copies, the group's chances at kill k depend on (equal keys: equal chances in every state).
+		 */
+		String groupCtxKey(List<String> group, int k)
+		{
+			StringBuilder b = new StringBuilder();
+			b.append(segKey.get(segIdx(k))).append('|').append(dep.kcDep ? Math.min(k - 1, dep.cap) : 0).append('|');
+			for (String n : relatedOf(group))
+			{
+				if (!group.contains(n))
+				{
+					b.append(ownedAt(n, k)).append(',');
+				}
+			}
+			return b.append('|').append(sinceSig(k)).toString();
+		}
+
+		/**
+		 * The chances of all items of a no-duplicate group at kill k, with the given copy counts for them (the other items as owned at
+		 * kill k): the chances in a state of the group other than the one the account is in.
+		 */
+		double[] pAtGroup(List<String> group, int k, Map<String, Integer> counts)
+		{
+			int si = segIdx(k);
+			int kcE = dep.kcDep ? Math.min(k - 1, dep.cap) : 0;
+			StringBuilder key = new StringBuilder("G|").append(String.join("\u0001", group)).append('|').append(segKey.get(si)).append('|').append(kcE).append('|');
+			for (String n : relatedOf(group))
+			{
+				Integer c = counts.get(n);
+				key.append(c != null ? c : ownedAt(n, k)).append(',');
+			}
+			key.append('|').append(sinceSig(k));
+			String ks = key.toString();
+			double[] hit = groupMemo.get(ks);
+			if (hit != null)
+			{
+				return hit;
+			}
+			Env env = Engine.makeEnv(boss, segEnv.get(si), globals, kcE);
+			Engine.Ctx ctx = new Engine.Ctx()
+			{
+				@Override
+				public int owned(Row row)
+				{
+					Integer c = counts.get(row.name);
+					return c != null ? c : ownedAt(row.name, k);
+				}
+
+				@Override
+				public double since(Row row)
+				{
+					return (k - 1) - lastBefore(row.name, k);
+				}
+			};
+			Set<String> want = new LinkedHashSet<>(dep.follows);
+			want.addAll(group);
+			Map<String, Engine.ItemProb> out = Engine.itemProbs(boss, env, ctx, want);
+			double[] v = new double[group.size()];
+			for (int i = 0; i < v.length; i++)
+			{
+				Engine.ItemProb ip = out.get(group.get(i));
+				v[i] = ip != null ? ip.p : 0;
+			}
+			groupMemo.put(ks, v);
+			return v;
+		}
+
+		private final Map<String, double[]> groupMemo = new HashMap<>();
 
 		public double pNext(String name)
 		{
@@ -867,6 +1048,235 @@ public final class Luck
 	}
 
 	/**
+	 * The no-duplicate group an item belongs to (its names), or null.
+	 */
+	static List<String> nodupGroupOf(Model m, String name)
+	{
+		for (Set<String> set : m.dep.nodupGroups.values())
+		{
+			if (set.contains(name) && set.size() > 1)
+			{
+				return new ArrayList<>(set);
+			}
+		}
+		return null;
+	}
+
+	static final int NODUP_LIMIT = 200_000;
+
+	/**
+	 * The chances of a no-duplicate group's items in one state of the group (the bit mask of the items at the fewest copies), with
+	 * the items outside the state at nothing.
+	 */
+	private static double[] stateProbs(Model m, List<String> group, int base, int state, int k)
+	{
+		Map<String, Integer> counts = new HashMap<>();
+		for (int i = 0; i < group.size(); i++)
+		{
+			counts.put(group.get(i), base + (((state >> i) & 1) != 0 ? 0 : 1));
+		}
+		double[] all = m.pAtGroup(group, k, counts);
+		double[] p = new double[all.length];
+		for (int i = 0; i < p.length; i++)
+		{
+			p[i] = ((state >> i) & 1) != 0 ? all[i] : 0;
+		}
+		return p;
+	}
+
+	/**
+	 * Chances of the next copy of an item of a no-duplicate group within the next n kills, and the kills to reach a chance: only the
+	 * copies held the fewest of can drop, so an item that cannot drop now can once the others have.  The group's state (which items
+	 * are at the fewest copies) is followed kill by kill.
+	 */
+	static void nodupForward(Model m, String x, List<String> group, int K, int[] windows, double[] cs, ItemAnalysis out)
+	{
+		int n = group.size();
+		int xi = group.indexOf(x);
+		int full = (1 << n) - 1;
+		int mn = Integer.MAX_VALUE;
+		int[] c0 = new int[n];
+		for (int i = 0; i < n; i++)
+		{
+			c0[i] = m.ownedAt(group.get(i), K + 1);
+			mn = Math.min(mn, c0[i]);
+		}
+		int s0 = 0;
+		for (int i = 0; i < n; i++)
+		{
+			if (c0[i] == mn)
+			{
+				s0 |= 1 << i;
+			}
+		}
+		Map<Integer, Double> dist = new HashMap<>();
+		dist.put(s0, 1.0);
+		double absorbed = 0;
+		int maxW = 0;
+		for (int w : windows)
+		{
+			maxW = Math.max(maxW, w);
+		}
+		double[] want = cs.clone();
+		Arrays.sort(want);
+		int wi = 0;
+		Map<Integer, Double> fwd = new HashMap<>();
+		Map<Double, Double> kto = new LinkedHashMap<>();
+		String lastCtx = null;
+		Map<Integer, double[]> byS = new HashMap<>();
+		int step = 0;
+		while (step < NODUP_LIMIT && (step < maxW || wi < want.length) && !dist.isEmpty())
+		{
+			step++;
+			int k = K + step;
+			String ck = m.groupCtxKey(group, k);
+			if (!ck.equals(lastCtx))
+			{
+				lastCtx = ck;
+				byS = new HashMap<>();
+			}
+			Map<Integer, Double> nd = new HashMap<>();
+			for (Map.Entry<Integer, Double> e : dist.entrySet())
+			{
+				int s = e.getKey();
+				double q = e.getValue();
+				double[] p = byS.get(s);
+				if (p == null)
+				{
+					p = stateProbs(m, group, mn, s, k);
+					byS.put(s, p);
+				}
+				double tot = 0;
+				for (double v : p)
+				{
+					tot += v;
+				}
+				absorbed += q * p[xi];
+				if (tot < 1)
+				{
+					nd.merge(s, q * (1 - tot), Double::sum);
+				}
+				for (int j = 0; j < n; j++)
+				{
+					if (j == xi || !(p[j] > 0))
+					{
+						continue;
+					}
+					int s2 = s & ~(1 << j);
+					if (s2 == 0)
+					{
+						s2 = full;
+					}
+					nd.merge(s2, q * p[j], Double::sum);
+				}
+			}
+			dist = nd;
+			for (int w : windows)
+			{
+				if (w == step)
+				{
+					fwd.put(w, absorbed);
+				}
+			}
+			while (wi < want.length && absorbed >= want[wi])
+			{
+				kto.put(want[wi], (double) step);
+				wi++;
+			}
+		}
+		for (int w : windows)
+		{
+			if (!out.fwd.containsKey(w))
+			{
+				out.fwd.put(w, fwd.containsKey(w) ? fwd.get(w) : absorbed);
+			}
+		}
+		out.kto = new LinkedHashMap<>();
+		for (double c : cs)
+		{
+			Double v = kto.get(c);
+			out.kto.put(c, v != null ? v : Double.POSITIVE_INFINITY);
+		}
+	}
+
+	/**
+	 * The chances of the copies of an item of a no-duplicate group over kills 1..K, before knowing what dropped: which items can drop
+	 * depends on what dropped before, so the chances as they were (nothing for an item between its copy and the rest of the set) would
+	 * make every such item look lucky.  The group's state is followed kill by kill instead.
+	 *
+	 * @return P(at least n copies) for n = 0..cap, then the expected copies
+	 */
+	static double[] nodupCareer(Model m, String x, List<String> group, int K, int cap)
+	{
+		int n = group.size();
+		int xi = group.indexOf(x);
+		int full = (1 << n) - 1;
+		int w = cap + 1;
+		Map<Integer, Double> dist = new HashMap<>();
+		dist.put(full * w, 1.0);
+		double expected = 0;
+		String lastCtx = null;
+		Map<Integer, double[]> byS = new HashMap<>();
+		for (int k = 1; k <= K; k++)
+		{
+			String ck = m.groupCtxKey(group, k);
+			if (!ck.equals(lastCtx))
+			{
+				lastCtx = ck;
+				byS = new HashMap<>();
+			}
+			Map<Integer, Double> nd = new HashMap<>();
+			for (Map.Entry<Integer, Double> e : dist.entrySet())
+			{
+				int s = e.getKey() / w;
+				int c = e.getKey() % w;
+				double q = e.getValue();
+				double[] p = byS.get(s);
+				if (p == null)
+				{
+					p = stateProbs(m, group, 0, s, k);
+					byS.put(s, p);
+				}
+				double tot = 0;
+				for (double v : p)
+				{
+					tot += v;
+				}
+				expected += q * p[xi];
+				if (q * (1 - tot) > 0)
+				{
+					nd.merge(s * w + c, q * (1 - tot), Double::sum);
+				}
+				for (int j = 0; j < n; j++)
+				{
+					if (!(p[j] > 0))
+					{
+						continue;
+					}
+					int s2 = s & ~(1 << j);
+					if (s2 == 0)
+					{
+						s2 = full;
+					}
+					nd.merge(s2 * w + (j == xi ? Math.min(cap, c + 1) : c), q * p[j], Double::sum);
+				}
+			}
+			dist = nd;
+		}
+		double[] out = new double[w + 1];
+		for (Map.Entry<Integer, Double> e : dist.entrySet())
+		{
+			int c = e.getKey() % w;
+			for (int i = 0; i <= c; i++)
+			{
+				out[i] += e.getValue();
+			}
+		}
+		out[w] = expected;
+		return out;
+	}
+
+	/**
 	 * The analysis of one item in one boss.
 	 */
 	public static final class ItemAnalysis
@@ -965,11 +1375,21 @@ public final class Luck
 		final List<Run> allRuns = K > 0 ? m.runsFor(runName, 1, K) : new ArrayList<Run>();
 		out.expected = null;
 		out.pct = null;
+		final List<String> grp = seq == null ? nodupGroupOf(m, name) : null;
 		if (K > 0)
 		{
 			java.util.function.IntToDoubleFunction needHits = mm -> mm <= 0 ? 0 : (seq != null ? seq.n + (mm - 1) * seq.len : mm);
 			java.util.function.IntToDoubleFunction ge = mm -> mm <= 0 ? 1 : atLeast((int) needHits.applyAsDouble(mm), allRuns);
-			if (out.once && O > 0)
+			if (grp != null && !out.once)
+			{
+				final double[] c = nodupCareer(m, name, grp, K, O + 1);
+				final int cap = O + 1;
+				ge = mm -> mm <= 0 ? 1 : mm <= cap ? c[mm] : 0;
+				out.pct = 1 - 0.5 * (ge.applyAsDouble(O) + ge.applyAsDouble(O + 1));
+				out.another = ge.applyAsDouble(O + 1);
+				out.expected = c[cap + 1];
+			}
+			else if (out.once && O > 0)
 			{
 				List<Integer> kn = m.known(name);
 				if (!kn.isEmpty())
@@ -1018,7 +1438,11 @@ public final class Luck
 			out.meter = out.streak > 0 ? atLeast(dd, sr) : 0;
 		}
 		// forward looking
-		if (!out.collected)
+		if (grp != null && !out.collected)
+		{
+			nodupForward(m, name, grp, K, new int[] {win, 10, 100, 500, 1000}, new double[] {0.5, 0.9, 0.99}, out);
+		}
+		else if (!out.collected)
 		{
 			int[] ns = {win, 10, 100, 500, 1000};
 			for (int n : ns)

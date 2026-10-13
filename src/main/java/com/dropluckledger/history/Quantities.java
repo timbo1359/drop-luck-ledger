@@ -6,7 +6,7 @@ import com.dropluckledger.engine.Data.Row;
 /**
  * Turns "how many of an item the game says you have" into "how many times it dropped".
  * <p>
- * Stackable items drop several at a time (a Barrows chest gives 35-40 bolt racks, an Amoxliatl kill 2-20 frozen tears), but
+ * Stackable items drop several at a time (the Alchemical Hydra gives 500-1000 dragon knives, the Hueycoatl 1-20 huasca seeds), but
  * the Loot Tracker and the Collection Log only keep the running total.  Counting that total as separate drops would make
  * the player look absurdly lucky, so it is divided by the usual amount per drop.  The result is an estimate; for items that
  * always drop one at a time it is exact.

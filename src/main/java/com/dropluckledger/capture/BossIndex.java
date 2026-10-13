@@ -62,14 +62,16 @@ public final class BossIndex
 		{"Crystalline Hunllef", "the-gauntlet"},
 		{"Corrupted Hunllef", "the-corrupted-gauntlet"},
 		{"Reward pool (Tempoross)", "tempoross"},
-		{"Reward cart (Wintertodt)", "wintertodt"},
-		{"Unsired", "abyssal-sire"},
 		{"Barrows", "barrows"},
 		{"Lunar Chest", "moons-of-peril"},
 		{"Fortis Colosseum", "fortis-colosseum"},
 		{"Sol Heredit", "fortis-colosseum"},
 		{"Vet'ion Reborn", "vetion"},
+		{"Hueycoatl body", "the-hueycoatl"},
 	};
+
+	private static final String SCROLL_BOX = "Scroll box";
+	private static final String CLUE_SCROLL = "Clue scroll";
 
 	private final Data data;
 	private final Map<String, KcLabel> kcByNorm = new HashMap<>();
@@ -79,6 +81,10 @@ public final class BossIndex
 	private final Map<String, List<KcLabel>> labelsOf = new LinkedHashMap<>();
 	private final Map<String, List<String>> lootNamesOf = new LinkedHashMap<>();
 	private final Map<String, Map<String, String>> itemsOf = new HashMap<>();
+	/**
+	 * Boss id to the normalised names of the other monsters whose loot is recorded under it without counting a kill.
+	 */
+	private final Map<String, Set<String>> extraLootOf = new HashMap<>();
 
 	public BossIndex(Data data)
 	{
@@ -118,6 +124,18 @@ public final class BossIndex
 			if (b != null)
 			{
 				addKc(Names.norm(a[0]), labelsOf.get(b.id).get(0));
+			}
+		}
+		for (Boss b : data.bosses)
+		{
+			for (String n : b.extraLoot)
+			{
+				addLoot(Names.norm(n), b.id);
+				extraLootOf.computeIfAbsent(b.id, k -> new HashSet<>()).add(Names.norm(n));
+				if (!lootNamesOf.get(b.id).contains(n))
+				{
+					lootNamesOf.get(b.id).add(n);
+				}
 			}
 		}
 		for (String[] a : LOOT_ALIASES)
@@ -260,6 +278,16 @@ public final class BossIndex
 	}
 
 	/**
+	 * True when a loot event of this name is the loot of another monster that counts for the boss (a God Wars bodyguard): it is
+	 * recorded, but it is not a kill of the boss.
+	 */
+	public boolean isExtraLoot(String bossId, String lootName)
+	{
+		Set<String> s = extraLootOf.get(bossId);
+		return s != null && s.contains(Names.norm(lootName));
+	}
+
+	/**
 	 * Every kill-count label of a boss, in the order of the boss data (the first one is the main mode).
 	 */
 	public List<KcLabel> labels(String bossId)
@@ -311,9 +339,24 @@ public final class BossIndex
 				{
 					flat.putIfAbsent(Names.flat(n), n);
 				}
+				// the wiki names a few items differently from the game ("Tooth half of key (moon key)" is "Tooth half of key")
+				for (Data.Row r : b.allRows())
+				{
+					String game = r.attr("game");
+					if (game != null && !game.isEmpty())
+					{
+						flat.putIfAbsent(Names.flat(game), r.name);
+					}
+				}
 				itemsOf.put(bossId, flat);
 			}
 		}
-		return flat.get(Names.flat(gameName));
+		String found = flat.get(Names.flat(gameName));
+		if (found == null && gameName.startsWith(SCROLL_BOX))
+		{
+			// since July 2025 monsters drop a scroll box in place of a clue scroll (once X Marks the Spot is done)
+			found = flat.get(Names.flat(CLUE_SCROLL + gameName.substring(SCROLL_BOX.length())));
+		}
+		return found;
 	}
 }

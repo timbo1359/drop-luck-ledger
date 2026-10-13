@@ -206,6 +206,75 @@ public class SettingsPageTest
 		assertEquals("Ledger erased", fx.panel.noteTexts().get(0));
 	}
 
+	private static String title(Fold f)
+	{
+		return Swings.get(() -> ((JButton) f.header()).getText());
+	}
+
+	@Test
+	public void theBossesToShowAreTickedOneByOneOrByGroup()
+	{
+		fx.ledger.setKc("zulrah", 100);
+		fx.ledger.setKc("duke-sucellus", 20);
+		SettingsPage sp = page();
+		assertTrue(sp.bossBox("zulrah").isSelected());
+		assertEquals("Showing every boss", sp.shownText());
+		assertFalse(sp.showAllButton().isEnabled());
+		Fold dt2 = sp.groupFold("Desert Treasure II");
+		assertEquals("Desert Treasure II (4/4)", title(dt2));
+		// untick everything, then tick only the Desert Treasure II bosses
+		Swings.edt(sp.showNoneButton()::doClick);
+		fx.settle();
+		assertFalse(fx.ledger.shown("zulrah"));
+		assertEquals("Showing 0 of 64 bosses", sp.shownText());
+		assertFalse(sp.bossBox("duke-sucellus").isSelected());
+		assertFalse(sp.showNoneButton().isEnabled());
+		assertEquals("Desert Treasure II (0/4)", title(dt2));
+		Swings.edt(Swings.button(dt2, "Tick these")::doClick);
+		fx.settle();
+		for (String id : new String[]{"duke-sucellus", "the-leviathan", "the-whisperer", "vardorvis"})
+		{
+			assertTrue(id, fx.ledger.shown(id));
+			assertTrue(id, sp.bossBox(id).isSelected());
+		}
+		assertFalse(fx.ledger.shown("zulrah"));
+		assertEquals("Showing 4 of 64 bosses", sp.shownText());
+		assertEquals("Desert Treasure II (4/4)", title(dt2));
+		// one at a time
+		Swings.edt(sp.bossBox("the-whisperer")::doClick);
+		fx.settle();
+		assertFalse(fx.ledger.shown("the-whisperer"));
+		assertEquals("Desert Treasure II (3/4)", title(dt2));
+		assertSame("the page was not rebuilt under the player's hand", sp, fx.panel.settingsPage());
+		// the overview lists only those, and the kills of the others are kept
+		Swings.edt(fx.panel.backButton()::doClick);
+		fx.settle();
+		String t = fx.pageText();
+		assertTrue(t, t.contains("1 boss tracked \u00b7 3 of 64 shown"));
+		assertTrue(t, t.contains("Duke Sucellus"));
+		assertFalse(t, t.contains("Zulrah"));
+		assertFalse(t, t.contains("The Whisperer"));
+		assertEquals(100, fx.ledger.kc("zulrah"));
+		// and back
+		fx.openSettings();
+		Swings.edt(fx.panel.settingsPage().showAllButton()::doClick);
+		fx.settle();
+		assertTrue(fx.ledger.prefs().hiddenBosses.isEmpty());
+		assertEquals("Showing every boss", fx.panel.settingsPage().shownText());
+	}
+
+	@Test
+	public void eraseKeepsTheBossesToShow()
+	{
+		fx.ledger.setKc("zulrah", 100);
+		fx.ledger.setShown(java.util.Collections.singletonList("vorkath"), false);
+		SettingsPage sp = page();
+		fx.dialogs.confirmAnswer = true;
+		Swings.edt(Swings.button(sp, "Erase everything")::doClick);
+		Ledger fresh = fx.host.replaced.get(0);
+		assertEquals(java.util.Collections.singletonList("vorkath"), fresh.prefs().hiddenBosses);
+	}
+
 	@Test
 	public void picturesCanBeTurnedOffAndOn()
 	{

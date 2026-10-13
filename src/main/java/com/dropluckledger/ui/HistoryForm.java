@@ -36,7 +36,7 @@ final class HistoryForm extends JPanel
 		JLabel from = new JLabel(Look.html(520, "Read from: " + Look.esc(String.join(", ", plan.sources))
 			+ ".<br>The game does not record which kill each old drop came on, so items come in without a kill number. They count towards "
 			+ "your luck right away (the kills you have made against the copies you own); no dry streak is shown for an item until you edit that drop "
-			+ "and add its kill number. Items that drop in stacks (bolt racks, frozen tears) are turned into an estimated number of drops, marked ~."));
+			+ "and add its kill number. Items that drop in stacks (huasca seeds, venom sacs) are turned into an estimated number of drops, marked ~."));
 		from.setFont(Look.small());
 		top.add(from);
 		add(top, BorderLayout.NORTH);

@@ -91,6 +91,8 @@ public final class HistorySources
 				in.addKc(key, n, SRC_KC);
 			}
 		}
+		// a boss can have several Loot Tracker records (one per name its loot goes by): their kills add up
+		Map<String, Integer> lootKills = new java.util.LinkedHashMap<>();
 		for (String key : game.savedKeys(LOOT_TRACKER_GROUP, LOOT_PREFIX))
 		{
 			Aggregate a = parse(gson, game.savedText(LOOT_TRACKER_GROUP, key));
@@ -103,14 +105,15 @@ public final class HistorySources
 			{
 				continue;
 			}
-			if (a.kills > 0)
+			// the God Wars bodyguards' loot counts for the general, but their kills are not kills of the general
+			if (a.kills > 0 && !index.isExtraLoot(bossId, a.name))
 			{
 				KcLabel label = index.kc(a.name);
 				List<KcLabel> labels = index.labels(bossId);
 				String name = label != null && label.bossId.equals(bossId) ? a.name : labels.isEmpty() ? null : labels.get(0).label;
 				if (name != null)
 				{
-					in.addKc(name, a.kills, SRC_LOOT);
+					lootKills.merge(name, a.kills, Integer::sum);
 				}
 			}
 			for (int i = 0; i + 1 < a.drops.length; i += 2)
@@ -121,6 +124,10 @@ public final class HistorySources
 					in.addOwned(bossId, null, item, a.drops[i + 1], SRC_LOOT);
 				}
 			}
+		}
+		for (Map.Entry<String, Integer> e : lootKills.entrySet())
+		{
+			in.addKc(e.getKey(), e.getValue(), SRC_LOOT);
 		}
 	}
 

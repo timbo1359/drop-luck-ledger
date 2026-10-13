@@ -13,7 +13,6 @@ import com.dropluckledger.engine.Data;
 import com.dropluckledger.ledger.BossState;
 import com.dropluckledger.ledger.Drop;
 import com.dropluckledger.ledger.Ledger;
-import com.dropluckledger.ledger.Period;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -179,66 +178,57 @@ public class CaptureTest
 	}
 
 	@Test
-	public void raidsKeepTheirKillCountWaitingForTheChest()
+	public void theGauntletKeepsItsCountWaitingForTheChest()
 	{
-		kc("Your completed Chambers of Xeric count is: <col=ff0000>51</col>.", 0);
-		capture.onLoot(loot("Chambers of Xeric", 2000, "Twisted bow", "Coins"));
-		BossState c = boss("chambers-of-xeric");
+		kc("Your Corrupted Gauntlet completion count is: <col=ff0000>51</col>.", 0);
+		// the reward chest is opened a while after the Hunllef dies
+		capture.onLoot(loot("Corrupted Gauntlet", 2000, "Enhanced crystal weapon seed", "Coins"));
+		BossState c = boss("the-corrupted-gauntlet");
 		assertEquals(51, c.kc);
 		assertNull(c.prov);
 		assertEquals(Integer.valueOf(51), c.drops.get(0).kc);
 	}
 
 	@Test
-	public void raidModesBecomeSettingsPeriods()
+	public void modesBecomeSettingsPeriods()
 	{
-		kc("Your completed Chambers of Xeric count is: <col=ff0000>10</col>.", 0);
-		capture.onLoot(loot("Chambers of Xeric", 10, "Coins"));
-		kc("Your completed Chambers of Xeric Challenge Mode count is: <col=ff0000>3</col>.", 500);
-		capture.onLoot(loot("Chambers of Xeric", 520, "Dragon claws"));
-		BossState c = boss("chambers-of-xeric");
-		assertEquals(13, c.kc);
-		// the three challenge mode kills are 11-13
-		assertEquals(0, ((Number) c.paramsAt(10).getOrDefault("cm", 0)).intValue());
-		assertEquals(1, ((Number) c.paramsAt(11).get("cm")).intValue());
-		assertEquals(1, ((Number) c.paramsAt(13).get("cm")).intValue());
-		assertEquals(Integer.valueOf(13), c.drops.get(0).kc);
-		// back to a normal raid
-		kc("Your completed Chambers of Xeric count is: <col=ff0000>11</col>.", 900);
-		c = boss("chambers-of-xeric");
-		assertEquals(14, c.kc);
-		assertEquals(0, ((Number) c.paramsAt(14).get("cm")).intValue());
-		assertEquals(1, ((Number) c.paramsAt(13).get("cm")).intValue());
-		assertEquals(3, c.segs.size());
+		kc("Your Duke Sucellus kill count is: <col=ff0000>10</col>.", 0);
+		capture.onLoot(loot("Duke Sucellus", 10, "Coins"));
+		capture.onKillCount("Awakened Duke Sucellus", 3, 500);
+		capture.onLoot(loot("Duke Sucellus", 520, "Chromium ingot"));
+		BossState d = boss("duke-sucellus");
+		assertEquals(13, d.kc);
+		// the three awakened kills are 11-13
+		assertEquals(0, ((Number) d.paramsAt(10).getOrDefault("awakened", 0)).intValue());
+		assertEquals(1, ((Number) d.paramsAt(11).get("awakened")).intValue());
+		assertEquals(1, ((Number) d.paramsAt(13).get("awakened")).intValue());
+		assertEquals(Integer.valueOf(13), d.drops.get(0).kc);
+		// back to a normal kill
+		kc("Your Duke Sucellus kill count is: <col=ff0000>11</col>.", 900);
+		d = boss("duke-sucellus");
+		assertEquals(14, d.kc);
+		assertEquals(0, ((Number) d.paramsAt(14).get("awakened")).intValue());
+		assertEquals(1, ((Number) d.paramsAt(13).get("awakened")).intValue());
+		assertEquals(3, d.segs.size());
 	}
 
 	@Test
-	public void theatreModesAreRememberedPerKill()
+	public void aSettingFromTheLootStandsForTheRunsBefore()
 	{
-		kc("Your completed Theatre of Blood count is: <col=ff0000>20</col>.", 0);
-		kc("Your completed Theatre of Blood: Hard Mode count is: <col=ff0000>2</col>.", 300);
-		BossState t = boss("theatre-of-blood");
-		assertEquals(22, t.kc);
-		assertEquals("normal", t.paramsAt(20).getOrDefault("mode", "normal"));
-		assertEquals("hard", t.paramsAt(21).get("mode"));
-		assertEquals("hard", t.paramsAt(22).get("mode"));
-	}
-
-	@Test
-	public void raidLevelFromLootMetadata()
-	{
-		kc("Your completed Tombs of Amascut count is: <col=ff0000>5</col>.", 0);
+		ledger.setKc("doom-of-mokhaiotl", 4);
 		Map<String, Object> hints = new LinkedHashMap<>();
-		hints.put("raidLevel", 400);
+		hints.put("delve", 8);
 		hints.put("fishing", 80); // not a setting of this boss: ignored
-		capture.onLoot(lootWith("Tombs of Amascut", 600, hints, "Lightbearer"));
-		BossState t = boss("tombs-of-amascut");
-		assertEquals(5, t.kc);
-		assertEquals(Integer.valueOf(5), t.drops.get(0).kc);
-		assertEquals(400, ((Number) t.paramsAt(5).get("raidLevel")).intValue());
-		assertFalse(t.paramsAt(5).containsKey("fishing"));
-		Period last = t.lastPeriod();
-		assertEquals(5, last.from);
+		capture.onLoot(lootWith("Doom of Mokhaiotl", 600, hints, "Mokhaiotl cloth"));
+		BossState d = boss("doom-of-mokhaiotl");
+		assertEquals(5, d.kc);
+		assertEquals(Integer.valueOf(5), d.drops.get(0).kc);
+		assertEquals(8, ((Number) d.paramsAt(5).get("delve")).intValue());
+		assertFalse(d.paramsAt(5).containsKey("fishing"));
+		assertEquals(Integer.valueOf(5), d.seenFrom("delve"));
+		// the runs counted before it are assumed to be at the first delve read
+		assertEquals(8, ((Number) d.paramsAt(1).get("delve")).intValue());
+		assertEquals(1, d.segs.size());
 	}
 
 	@Test

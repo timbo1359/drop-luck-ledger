@@ -56,7 +56,7 @@ final class LogForm extends Column
 		List<String> others = new ArrayList<>();
 		for (Map.Entry<String, ItemMeta> e : boss.meta().entrySet())
 		{
-			if (!tracked.contains(e.getKey()))
+			if (!tracked.contains(e.getKey()) && !e.getValue().hidden)
 			{
 				others.add(e.getKey());
 			}

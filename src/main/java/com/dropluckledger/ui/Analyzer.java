@@ -10,6 +10,7 @@ import com.dropluckledger.engine.Luck;
 import com.dropluckledger.ledger.BossState;
 import com.dropluckledger.ledger.Drop;
 import com.dropluckledger.ledger.Ledger;
+import com.dropluckledger.ledger.Prefs;
 import com.dropluckledger.plugin.ItemIcons;
 import java.text.Collator;
 import java.util.ArrayList;
@@ -42,15 +43,9 @@ final class Analyzer
 	 */
 	private static final Object NONE = new Object();
 	/**
-	 * The rankings on the overview.
+	 * The luck percentile from which an item counts as a spoon on the overview: "Slightly lucky" and up, the same line as the labels.
 	 */
-	static final int DRY = 5;
-	static final int HOT = 5;
-	/**
-	 * Luck percentiles that count as dry (below the first) and lucky (from the second), the same lines as the labels.
-	 */
-	private static final double DRY_BELOW = 0.40;
-	private static final double HOT_FROM = 0.60;
+	private static final double SPOON_FROM = 0.60;
 	/**
 	 * Points on the chart.
 	 */
@@ -321,13 +316,24 @@ final class Analyzer
 	// ------------------------------------------------------------------ the overview
 
 	/**
-	 * The overview page; null when cancelled.
+	 * The overview page; null when cancelled.  It lists the bosses ticked under "Bosses to show" only; an item several bosses drop
+	 * still has the luck of all the player's kills at them, so it reads the same as on the boss pages.
 	 */
 	synchronized Views.OverviewView overview(BooleanSupplier cancelled)
 	{
-		final int window = ledger.prefs().window;
+		final Prefs prefs = ledger.prefs();
+		final int window = prefs.window;
+		final Set<String> hidden = new HashSet<>(prefs.hiddenBosses);
 		final long overall = ledger.revision();
-		List<String> ids = ledger.activeBosses();
+		List<String> active = ledger.activeBosses();
+		List<String> ids = new ArrayList<>();
+		for (String id : active)
+		{
+			if (!hidden.contains(id))
+			{
+				ids.add(id);
+			}
+		}
 		List<Views.Rank> rows = new ArrayList<>();
 		Set<String> ranked = new HashSet<>();
 		List<Views.BossRow> bosses = new ArrayList<>();
@@ -356,7 +362,7 @@ final class Analyzer
 					{
 						if (ranked.add(n) && !Double.isNaN(p.pct))
 						{
-							rows.add(rankOf(p));
+							rows.add(rankOf(p, hidden));
 						}
 					}
 					else if (a.pct != null && a.expected != null && a.another != null)
@@ -386,21 +392,17 @@ final class Analyzer
 			Views.AnyView any = st.kc > 0 ? anyUnique(id, rev, names, window) : null;
 			bosses.add(new Views.BossRow(id, boss.name, st.kc, got, logNames.size(), any == null ? null : any.u, st.u));
 		}
-		List<Views.Rank> dry = new ArrayList<>();
-		List<Views.Rank> lucky = new ArrayList<>();
+		List<Views.Rank> spoons = new ArrayList<>();
 		for (Views.Rank r : rows)
 		{
-			if (r.expected >= 0.5 && r.pct < DRY_BELOW)
+			if (r.got > 0 && r.pct >= SPOON_FROM)
 			{
-				dry.add(r);
-			}
-			if (r.got > 0 && r.pct >= HOT_FROM)
-			{
-				lucky.add(r);
+				spoons.add(r);
 			}
 		}
-		dry.sort(Comparator.comparingDouble((Views.Rank r) -> r.pct));
-		lucky.sort(Comparator.comparingDouble((Views.Rank r) -> r.pct).reversed());
+		// luckiest first; at the same luck the one further ahead of its rate
+		spoons.sort(Comparator.comparingDouble((Views.Rank r) -> r.pct).reversed().thenComparingDouble(r -> r.expected - r.got)
+			.thenComparing(r -> r.item, String.CASE_INSENSITIVE_ORDER));
 		bosses.sort(Comparator.comparingLong((Views.BossRow b) -> b.updated).reversed().thenComparing(b -> b.name, String.CASE_INSENSITIVE_ORDER));
 		List<Luck.Pool> pooled = new ArrayList<>();
 		Set<String> seen = new HashSet<>();
@@ -424,29 +426,28 @@ final class Analyzer
 			}
 		}
 		pooled.sort(Comparator.comparingDouble((Luck.Pool p) -> p.pct));
-		return new Views.OverviewView(overall, ids.size(), top(dry, DRY), top(lucky, HOT), bosses, pooled);
+		return new Views.OverviewView(overall, ids.size(), active.size(), spoons, bosses, pooled);
 	}
 
 	/**
-	 * A ranking line for an item pooled over several bosses; it opens the boss the player has the most kills at.
+	 * A ranking line for an item pooled over several bosses; it opens the shown boss the player has the most kills at.
 	 */
-	private static Views.Rank rankOf(Luck.Pool p)
+	private static Views.Rank rankOf(Luck.Pool p, Set<String> hidden)
 	{
-		Luck.PoolPer main = p.per.get(0);
+		Luck.PoolPer main = null;
 		for (Luck.PoolPer x : p.per)
 		{
-			if (x.K > main.K)
+			if (!hidden.contains(x.id) && (main == null || x.K > main.K))
 			{
 				main = x;
 			}
 		}
+		if (main == null)
+		{
+			main = p.per.get(0);
+		}
 		String where = main.name + (p.per.size() > 1 ? " +" + (p.per.size() - 1) + " more" : "");
 		return new Views.Rank(main.id, where, p.name, p.O, p.expected, p.pct, p.another, p.label, true);
-	}
-
-	private static <T> List<T> top(List<T> l, int n)
-	{
-		return new ArrayList<>(l.subList(0, Math.min(n, l.size())));
 	}
 
 	// ------------------------------------------------------------------ the drop table
@@ -470,6 +471,10 @@ final class Analyzer
 			String n = e.getKey();
 			Views.RowInfo ri = info.get(n);
 			ItemMeta m = meta.get(n);
+			if (m != null && m.hidden)
+			{
+				continue;
+			}
 			boolean notable = m != null && (m.isUnique() || m.isPet()) || logNames.contains(n);
 			rows.add(new Views.TableRow(n, e.getValue().p, ri == null ? "" : ri.qty, ri == null ? new ArrayList<String>() : ri.rates,
 				ri == null ? new ArrayList<String>() : ri.where, logNames.contains(n), notable));

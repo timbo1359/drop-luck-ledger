@@ -208,7 +208,7 @@ public class LedgerTest
 			+ "\"zulrah\":{\"kc\":5,\"segs\":[{\"from\":1,\"params\":{\"konar\":1}}],"
 			+ "\"drops\":[{\"id\":\"a1\",\"item\":\"Magic fang\",\"kc\":300,\"qty\":1,\"t\":1700000000000},"
 			+ "{\"id\":\"a2\",\"item\":\"Tanzanite fang\",\"kc\":null,\"qty\":1,\"t\":0,\"src\":\"import\"}],\"track\":[],\"hide\":[\"Uncut onyx\"],\"u\":1700000000001},"
-			+ "\"chambers-of-xeric\":{\"kc\":70,\"segs\":[{\"from\":5,\"params\":{\"cm\":true,\"points\":\"31000\",\"bogus\":3}}],\"drops\":[],\"track\":[],\"hide\":[]},"
+			+ "\"nex\":{\"kc\":70,\"segs\":[{\"from\":5,\"params\":{\"mvp\":true,\"team\":\"4\",\"bogus\":3}}],\"drops\":[],\"track\":[],\"hide\":[]},"
 			+ "\"not-a-boss\":{\"kc\":9,\"segs\":[],\"drops\":[],\"track\":[],\"hide\":[]},"
 			+ "\"vorkath\":{\"kc\":\"12\",\"segs\":[],\"drops\":[{\"item\":7},{\"id\":\"v1\",\"item\":\"Vorki\",\"kc\":0,\"qty\":0}],\"track\":[\"Dragon bones\",5],\"hide\":null}"
 			+ "}}";
@@ -232,12 +232,12 @@ public class LedgerTest
 		assertNull(z.drops.get(1).kc);
 		assertEquals(Drop.SRC_IMPORT, z.drops.get(1).src);
 		assertEquals(java.util.Collections.singletonList("Uncut onyx"), z.hide);
-		BossState c = l.copyOf("chambers-of-xeric");
+		BossState c = l.copyOf("nex");
 		assertEquals(2, c.segs.size()); // the first period always starts at kill 1
 		assertEquals(1, c.segs.get(0).from);
 		assertEquals(5, c.segs.get(1).from);
-		assertEquals(1, c.segs.get(1).params.get("cm"));
-		assertEquals(31000, c.segs.get(1).params.get("points"));
+		assertEquals(1, c.segs.get(1).params.get("mvp"));
+		assertEquals(4, c.segs.get(1).params.get("team"));
 		assertFalse(c.segs.get(1).params.containsKey("bogus"));
 		assertFalse(l.hasBoss("not-a-boss"));
 		BossState v = l.copyOf("vorkath");
@@ -247,6 +247,61 @@ public class LedgerTest
 		assertEquals(1, v.drops.get(0).qty);
 		assertEquals(java.util.Collections.singletonList("Dragon bones"), v.track);
 		assertTrue(v.hide.isEmpty());
+	}
+
+	@Test
+	public void bossesThePluginLeavesOutAreKeptInTheFile() throws Exception
+	{
+		String cox = "{\"kc\":70,\"segs\":[{\"from\":1,\"params\":{\"cm\":1}}],"
+			+ "\"drops\":[{\"id\":\"t1\",\"item\":\"Twisted bow\",\"kc\":64,\"qty\":1,\"t\":5}],\"track\":[],\"hide\":[]}";
+		String json = "{\"app\":\"drop-luck-ledger\",\"v\":1,\"prefs\":{},\"bosses\":{\"chambers-of-xeric\":" + cox + ",\"zulrah\":{\"kc\":5}}}";
+		Ledger l = LedgerCodec.fromJson(data, json);
+		assertFalse(l.hasBoss("chambers-of-xeric"));
+		assertEquals(java.util.Collections.singletonList("zulrah"), l.activeBosses());
+		// written back as it was, so the web app still has it
+		com.google.gson.JsonObject saved = new com.google.gson.JsonParser().parse(LedgerCodec.toJson(gson, l)).getAsJsonObject().getAsJsonObject("bosses");
+		assertEquals(new com.google.gson.JsonParser().parse(cox), saved.get("chambers-of-xeric"));
+		assertTrue(saved.has("zulrah"));
+		// a restore keeps it, a merge brings it over when it is missing
+		Ledger restored = ledger();
+		restored.replaceWith(l);
+		assertTrue(LedgerCodec.toJson(gson, restored).contains("Twisted bow"));
+		Ledger merged = ledger();
+		merged.setKc("vorkath", 3);
+		merged.mergeFrom(l);
+		assertTrue(LedgerCodec.toJson(gson, merged).contains("Twisted bow"));
+		assertEquals(3, merged.kc("vorkath"));
+		// erasing everything (a fresh ledger) lets it go
+		restored.replaceWith(ledger());
+		assertFalse(LedgerCodec.toJson(gson, restored).contains("chambers-of-xeric"));
+	}
+
+	@Test
+	public void theBossesToShowAreSavedWithTheLedger() throws Exception
+	{
+		Ledger l = ledger();
+		l.setKc("zulrah", 5);
+		long zulrah = l.revision("zulrah");
+		List<String> told = new ArrayList<>();
+		l.addListener(told::add);
+		l.setShown(java.util.Arrays.asList("zulrah", "vorkath"), false);
+		assertFalse(l.shown("zulrah"));
+		assertFalse(l.shown("vorkath"));
+		assertTrue(l.shown("duke-sucellus"));
+		assertEquals(1, told.size());
+		assertEquals(zulrah, l.revision("zulrah")); // no figure depends on it: what was worked out stays
+		l.setShown(java.util.Collections.singletonList("vorkath"), false);
+		assertEquals(1, told.size()); // nothing changed, nothing told
+		Ledger back = LedgerCodec.fromJson(data, LedgerCodec.toJson(gson, l));
+		assertEquals(java.util.Arrays.asList("zulrah", "vorkath"), back.prefs().hiddenBosses);
+		assertEquals(5, back.kc("zulrah")); // still recorded
+		l.setShown(java.util.Collections.singletonList("zulrah"), true);
+		assertTrue(l.shown("zulrah"));
+		// unknown bosses and repeats are dropped when read
+		Ledger odd = LedgerCodec.fromJson(data, "{\"app\":\"drop-luck-ledger\",\"v\":1,\"prefs\":{\"hiddenBosses\":[\"zulrah\",\"not-a-boss\",\"zulrah\",5]}}");
+		assertEquals(java.util.Collections.singletonList("zulrah"), odd.prefs().hiddenBosses);
+		// a ledger that hides nothing does not write the list
+		assertFalse(LedgerCodec.toJson(gson, ledger()).contains("hiddenBosses"));
 	}
 
 	@Test

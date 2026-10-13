@@ -211,6 +211,18 @@ public final class HistoryPlanner
 		{
 			itemKey.putIfAbsent(Names.flat(n), n);
 		}
+		// collection log pages use the game's names, which differ from the wiki's for a few items
+		for (Boss b : data.bosses)
+		{
+			for (Data.Row r : b.allRows())
+			{
+				String game = r.attr("game");
+				if (r.log && game != null && !game.isEmpty())
+				{
+					itemKey.putIfAbsent(Names.flat(game), r.name);
+				}
+			}
+		}
 	}
 
 	public Plan plan(HistoryInput in)
@@ -254,6 +266,8 @@ public final class HistoryPlanner
 		}
 		Map<String, Page> perItem = new LinkedHashMap<>();
 		LinkedHashSet<String> missing = new LinkedHashSet<>();
+		// what the sources that name the boss received, summed over their records (one per name the boss's loot goes by)
+		Map<String, Integer> exactQty = new LinkedHashMap<>();
 		for (HistoryInput.Owned o : in.owned)
 		{
 			plan.itemsTotal++;
@@ -266,20 +280,7 @@ public final class HistoryPlanner
 					missing.add(o.item);
 					continue;
 				}
-				int drops = Quantities.drops(b, item, o.count);
-				String key = o.bossId + '|' + item;
-				if (drops >= exact.getOrDefault(key, 0))
-				{
-					exact.put(key, drops);
-					if (drops != o.count)
-					{
-						quantities.put(key, o.count);
-					}
-					else
-					{
-						quantities.remove(key);
-					}
-				}
+				exactQty.merge(o.bossId + '|' + item, o.count, Integer::sum);
 				continue;
 			}
 			String item = itemKey.get(Names.flat(o.item));
@@ -293,6 +294,18 @@ public final class HistoryPlanner
 			if (o.page != null)
 			{
 				p.pages.add(Names.norm(o.page));
+			}
+		}
+		for (Map.Entry<String, Integer> e : exactQty.entrySet())
+		{
+			String key = e.getKey();
+			Boss b = data.boss(key.substring(0, key.indexOf('|')));
+			String item = key.substring(key.indexOf('|') + 1);
+			int drops = Quantities.drops(b, item, e.getValue());
+			exact.put(key, drops);
+			if (drops != e.getValue())
+			{
+				quantities.put(key, e.getValue());
 			}
 		}
 		for (Map.Entry<String, Integer> e : exact.entrySet())

@@ -25,21 +25,21 @@ public class QuantitiesTest
 	}
 
 	@Test
-	public void aStackOfBoltRacksIsAboutOneHundredBarrowsChests()
+	public void aStackOfThrownaxesIsAboutOneHundredKills()
 	{
-		// a Barrows chest gives 35-40 bolt racks
-		assertEquals(37.5, Quantities.perDrop(data.boss("barrows"), "Bolt rack"), 1e-9);
-		assertEquals(100, Quantities.drops(data.boss("barrows"), "Bolt rack", 3750));
-		assertEquals(1, Quantities.drops(data.boss("barrows"), "Bolt rack", 20)); // never below one drop once something was received
+		// the Alchemical Hydra gives 500-1000 dragon thrownaxes at a time
+		assertEquals(750, Quantities.perDrop(data.boss("alchemical-hydra"), "Dragon thrownaxe"), 1e-9);
+		assertEquals(100, Quantities.drops(data.boss("alchemical-hydra"), "Dragon thrownaxe", 75000));
+		assertEquals(1, Quantities.drops(data.boss("alchemical-hydra"), "Dragon thrownaxe", 20)); // never below one drop once something was received
 	}
 
 	@Test
 	public void severalAmountsAreAveragedByHowLikelyEachIs()
 	{
-		// Amoxliatl's frozen tears: 2-4 at 6 in 10, 5-10 at 3 in 10, 10-20 at 1 in 10
-		double each = 0.6 * 3 + 0.3 * 7.5 + 0.1 * 15;
-		assertEquals(each, Quantities.perDrop(data.boss("amoxliatl"), "Frozen tear"), 1e-9);
-		assertEquals(100, Quantities.drops(data.boss("amoxliatl"), "Frozen tear", (int) Math.round(each * 100)));
+		// the Phantom Muspah's ancient essence: 540-599 at 60 in 100, 885-995 at 23 in 100, 1,970-2,060 at 10 in 100
+		double each = (0.6 * 569.5 + 0.23 * 940 + 0.1 * 2015) / (0.6 + 0.23 + 0.1);
+		assertEquals(each, Quantities.perDrop(data.boss("phantom-muspah"), "Ancient essence"), 1e-9);
+		assertEquals(100, Quantities.drops(data.boss("phantom-muspah"), "Ancient essence", (int) Math.round(each * 100)));
 	}
 
 	@Test
