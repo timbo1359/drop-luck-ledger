@@ -4,11 +4,15 @@ import java.awt.Component;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
+import net.runelite.api.Item;
 import net.runelite.api.ItemComposition;
+import net.runelite.api.ItemContainer;
 import net.runelite.api.Player;
 import net.runelite.api.Skill;
 import net.runelite.api.WorldType;
@@ -90,6 +94,31 @@ public final class RuneLiteGame implements Game
 	public int varbit(int id)
 	{
 		return client.getVarbitValue(id);
+	}
+
+	@Override
+	public int varp(int id)
+	{
+		return client.getVarpValue(id);
+	}
+
+	@Override
+	public Map<Integer, Integer> inventory(int inventoryId)
+	{
+		ItemContainer container = client.getItemContainer(inventoryId);
+		if (container == null)
+		{
+			return null;
+		}
+		Map<Integer, Integer> out = new HashMap<>();
+		for (Item item : container.getItems())
+		{
+			if (item.getId() >= 0 && item.getQuantity() > 0)
+			{
+				out.merge(item.getId(), item.getQuantity(), Integer::sum);
+			}
+		}
+		return out;
 	}
 
 	@Override

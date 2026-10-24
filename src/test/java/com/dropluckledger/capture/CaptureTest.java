@@ -400,4 +400,170 @@ public class CaptureTest
 		Collections.sort(c);
 		return c;
 	}
+
+	// ------------------------------------------------------------------ the drop log
+
+	private final List<String> lootLog = new ArrayList<>();
+
+	private void logLoot()
+	{
+		capture.setLootLog((t, boss, kill, items, snap) ->
+		{
+			StringBuilder b = new StringBuilder(boss).append('@').append(kill).append(':');
+			for (Stack st : items)
+			{
+				b.append(' ').append(st.name).append(" x").append(st.qty);
+			}
+			if (snap != null)
+			{
+				b.append(" snap").append(snap);
+			}
+			lootLog.add(b.toString());
+		});
+	}
+
+	@Test
+	public void everyLootIsLoggedWithAllItsItems()
+	{
+		logLoot();
+		kc(zulrahKc(100), 10);
+		capture.onLoot(new Loot("Zulrah", 1, Arrays.asList(new Stack("Coins", 40_000), new Stack("Zulrah's scales", 120)), null, 11));
+		assertEquals(Collections.singletonList("zulrah@100: Coins x40000 Zulrah's scales x120"), lootLog);
+		// nothing of it is tracked, so the ledger has none of it
+		assertTrue(boss("zulrah").drops.isEmpty());
+		// loot of things that are not bosses is not logged
+		capture.onLoot(loot("Goblin", 12, "Bones"));
+		assertEquals(1, lootLog.size());
+	}
+
+	@Test
+	public void lootBeforeItsKillCountIsLoggedAtTheKillTheMessageSays()
+	{
+		logLoot();
+		kc(zulrahKc(99), 0);
+		capture.onTick(500, true);
+		// the next kill's loot comes first: it is counted as kill 100 for now, and logged once the message says which kill it was
+		capture.onLoot(loot("Zulrah", 600, "Coins"));
+		assertTrue(lootLog.isEmpty());
+		kc(zulrahKc(103), 601); // three kills were made with the plugin off
+		assertEquals(Collections.singletonList("zulrah@103: Coins x1"), lootLog);
+		// a message that never comes: the loot is logged at the kill it was counted at
+		capture.onLoot(loot("Zulrah", 700, "Bones"));
+		assertEquals(1, lootLog.size());
+		capture.onTick(700 + Capture.SHORT_WINDOW + 1, true);
+		assertEquals("zulrah@104: Bones x1", lootLog.get(1));
+	}
+
+	@Test
+	public void sharedItemsAreLoggedWithTheOtherBossesKillCounts()
+	{
+		logLoot();
+		ledger.setKc("the-whisperer", 30);
+		kc("Your Vardorvis kill count is: <col=ff0000>44</col>.", 0);
+		capture.onLoot(loot("Vardorvis", 2, "Virtus mask"));
+		assertEquals("vardorvis@44: Virtus mask x1 snap{the-whisperer=30}", lootLog.get(0));
+	}
+
+	@Test
+	public void aPetIsLoggedOnceThoughTwoMessagesTellOfIt()
+	{
+		logLoot();
+		ledger.setTracked("zulrah", "Pet Snakeling", false); // logged even when the player does not track it
+		kc(zulrahKc(100), 10);
+		capture.onLoot(loot("Zulrah", 11, "Coins"));
+		capture.onPetMessage(12);
+		capture.onCollectionLog("Pet snakeling", 12);
+		assertEquals(Arrays.asList("zulrah@100: Coins x1", "zulrah@100: Pet Snakeling x1"), lootLog);
+		assertEquals(0, boss("zulrah").copies("Pet Snakeling"));
+		// a collection log message about an item that came with the loot is not logged again
+		capture.onCollectionLog("Tanzanite fang", 13);
+		assertEquals(2, lootLog.size());
+	}
+
+	// ------------------------------------------------------------------ counts the game shows on screen
+
+	@Test
+	public void aHigherCountOnScreenAddsTheKillsTheLedgerMissed()
+	{
+		kc(zulrahKc(100), 10);
+		capture.onLoot(loot("Zulrah", 12, "Coins", "Tanzanite fang"));
+		capture.onTick(500, true);
+		// 12 kills made on another computer
+		Capture.Raised r = capture.onShownCount("Zulrah kills", 112);
+		assertNotNull(r);
+		assertEquals("zulrah", r.bossId);
+		assertEquals(100, r.from);
+		assertEquals(112, r.to);
+		BossState z = boss("zulrah");
+		assertEquals(112, z.kc);
+		assertEquals(1, z.drops.size());
+		assertEquals(Integer.valueOf(100), z.drops.get(0).kc);
+		// the same count again, or a lower one, changes nothing
+		assertNull(capture.onShownCount("Zulrah kills", 112));
+		assertNull(capture.onShownCount("Zulrah", 105));
+		assertEquals(112, boss("zulrah").kc);
+		// the next kill follows on
+		kc(zulrahKc(113), 600);
+		assertEquals(113, boss("zulrah").kc);
+	}
+
+	@Test
+	public void aCountOnScreenStartsABossTheLedgerHasNotSeen()
+	{
+		Capture.Raised r = capture.onShownCount("Vorkath", 320);
+		assertEquals(0, r.from);
+		assertEquals(320, r.to);
+		BossState v = boss("vorkath");
+		assertEquals(320, v.kc);
+		assertNull(v.liveFrom); // none of these kills was seen by the plugin
+		kc("Your Vorkath kill count is: <col=ff0000>321</col>.", 10);
+		assertEquals(321, boss("vorkath").kc);
+		assertEquals(Integer.valueOf(321), boss("vorkath").liveFrom);
+	}
+
+	@Test
+	public void theKillsMissedAreInTheModeTheirCountIsFor()
+	{
+		kc("Your Duke Sucellus kill count is: <col=ff0000>10</col>.", 0);
+		// a kill whose loot is still to come is not disturbed: the next look catches up instead
+		assertNull(capture.onShownCount("Duke Sucellus (awakened) kills", 3));
+		capture.onLoot(loot("Duke Sucellus", 4, "Coins"));
+		Capture.Raised r = capture.onShownCount("Duke Sucellus (awakened) kills", 3);
+		assertEquals(13, r.to);
+		BossState d = boss("duke-sucellus");
+		assertEquals(0, ((Number) d.paramsAt(10).getOrDefault("awakened", 0)).intValue());
+		assertEquals(1, ((Number) d.paramsAt(11).get("awakened")).intValue());
+		assertEquals(1, ((Number) d.paramsAt(13).get("awakened")).intValue());
+		// the next normal kill is normal again, and counted once
+		kc("Your Duke Sucellus kill count is: <col=ff0000>11</col>.", 900);
+		d = boss("duke-sucellus");
+		assertEquals(14, d.kc);
+		assertEquals(0, ((Number) d.paramsAt(14).get("awakened")).intValue());
+	}
+
+	@Test
+	public void killsCountedFromTheirLootAreInTheGamesCount()
+	{
+		// the kill-count message was never recognised: the kill was counted from its loot
+		capture.onLoot(loot("Vorkath", 10, "Coins"));
+		assertEquals(1, boss("vorkath").provisional());
+		assertNull(capture.onShownCount("Vorkath", 1));
+		BossState v = boss("vorkath");
+		assertEquals(1, v.kc);
+		assertEquals(0, v.provisional());
+		// so the next message counts one kill, not none
+		kc("Your Vorkath kill count is: <col=ff0000>2</col>.", 900);
+		assertEquals(2, boss("vorkath").kc);
+	}
+
+	@Test
+	public void countsOfRewardsClaimedAreLeftAlone()
+	{
+		// a Doom of Mokhaiotl or Colosseum run is one claimed reward; the game's count is something else
+		assertNull(capture.onShownCount("Doom of Mokhaiotl", 40));
+		assertNull(capture.onShownCount("Sol Heredit kills", 12));
+		assertNull(capture.onShownCount("Chompy bird kills", 900));
+		assertNull(capture.onShownCount("Zulrah kills", 0));
+		assertTrue(ledger.activeBosses().isEmpty());
+	}
 }

@@ -207,6 +207,40 @@ public class GroupCaptureTest
 	}
 
 	@Test
+	public void theBodyguardsKilledAreCountedForEachKill()
+	{
+		// two bodyguards before the first general of the session: they go to that kill
+		capture.onLoot(loot("Sergeant Strongstack", 50, "Coins"));
+		capture.onLoot(loot("Sergeant Steelwill", 60, "Coins"));
+		kc("General Graardor", 30, 100);
+		capture.onLoot(loot("General Graardor", 102, "Coins"));
+		assertEquals(2, num(param("general-graardor", 30, "minions")));
+		// the next kill: one bodyguard after it, then the kill after with none
+		kc("General Graardor", 31, 300);
+		capture.onLoot(loot("General Graardor", 302, "Coins"));
+		assertEquals(0, num(param("general-graardor", 31, "minions")));
+		capture.onLoot(loot("Sergeant Grimspike", 340, "Coins"));
+		assertEquals(1, num(param("general-graardor", 31, "minions")));
+		// never more than the three there are
+		capture.onLoot(loot("Sergeant Grimspike", 360, "Coins"));
+		capture.onLoot(loot("Sergeant Steelwill", 370, "Coins"));
+		capture.onLoot(loot("Sergeant Strongstack", 380, "Coins"));
+		assertEquals(3, num(param("general-graardor", 31, "minions")));
+		kc("General Graardor", 32, 500);
+		capture.onLoot(loot("General Graardor", 502, "Coins"));
+		assertEquals(0, num(param("general-graardor", 32, "minions")));
+		// the kills before the plugin saw any keep the player's setting, and the setting is read from the game from kill 30 on
+		assertEquals(3, num(param("general-graardor", 29, "minions")));
+		assertEquals(Integer.valueOf(30), boss("general-graardor").seenFrom("minions"));
+		// a kill whose own loot went to another player still counts the bodyguards whose loot came
+		kc("General Graardor", 33, 700);
+		capture.onLoot(loot("Sergeant Steelwill", 730, "Coins"));
+		capture.onTick(700 + Capture.TOP_WINDOW + 1, true);
+		assertEquals(0, num(param("general-graardor", 33, "looted")));
+		assertEquals(1, num(param("general-graardor", 33, "minions")));
+	}
+
+	@Test
 	public void anUnsiredOfferedLaterIsTheSiresLootWithoutAKill()
 	{
 		kc("Abyssal Sire", 300, 100);
@@ -331,16 +365,54 @@ public class GroupCaptureTest
 	@Test
 	public void theBossesThePluginLeavesOutAreNotKnown()
 	{
-		assertNull(index.kc("Chambers of Xeric"));
-		assertNull(index.kc("Theatre of Blood"));
-		assertNull(index.kc("Tombs of Amascut: Expert Mode"));
 		assertNull(index.kc("Royal Titans"));
 		assertNull(index.kc("Wintertodt"));
 		assertNull(index.loot("Branda the Fire Queen"));
 		assertNull(index.loot("Reward cart (Wintertodt)"));
 		kc("Royal Titans", 10, 100);
-		capture.onLoot(loot("Tombs of Amascut", 102, "Coins"));
+		capture.onLoot(loot("Reward cart (Wintertodt)", 102, "Coins"));
 		assertTrue(ledger.activeBosses().isEmpty());
+	}
+
+	// ------------------------------------------------------------------ raids
+
+	@Test
+	public void aRaidsChestIsOpenedLongAfterItsCount()
+	{
+		kc("Chambers of Xeric Challenge Mode", 20, 100);
+		// Olm dies, the team takes a few minutes to loot the chest
+		capture.onTick(1500, true);
+		Map<String, Object> hints = new java.util.HashMap<>();
+		hints.put("points", 41_234);
+		capture.onLoot(lootWith("Chambers of Xeric", 2100, hints, "Twisted bow", "Dark journal"));
+		BossState c = boss("chambers-of-xeric");
+		assertEquals(20, c.kc);
+		assertEquals(Integer.valueOf(20), c.drops.get(0).kc);
+		assertEquals(1, num(param("chambers-of-xeric", 20, "cm")));
+		assertEquals(41_234, num(param("chambers-of-xeric", 20, "points")));
+		// the raids the plugin did not see keep the usual settings (30,000 points), not the first raid's
+		assertEquals(30_000, num(param("chambers-of-xeric", 19, "points")));
+		// the pet comes with the chest
+		capture.onPetMessage(2102);
+		assertEquals(1, boss("chambers-of-xeric").copies("Olmlet"));
+	}
+
+	@Test
+	public void aCollectionLogMessageAfterARaidBelongsToIt()
+	{
+		// the Loot Tracker does not report this raid's chest (yet): a new collection log item still comes from it
+		kc("The Fractured Archive", 3, 100);
+		capture.onCollectionLog("Rondache", 400);
+		BossState f = boss("the-fractured-archive");
+		assertEquals(3, f.kc);
+		assertEquals(1, f.copies("Rondache"));
+		assertEquals(Integer.valueOf(3), f.drops.get(0).kc);
+		// far too late, or after another boss, it does not
+		capture.onCollectionLog("Rondache", 2000);
+		assertEquals(1, boss("the-fractured-archive").copies("Rondache"));
+		kc("Zulrah", 50, 3000);
+		capture.onCollectionLog("Rondache", 3050);
+		assertEquals(1, boss("the-fractured-archive").copies("Rondache"));
 	}
 
 	@Test

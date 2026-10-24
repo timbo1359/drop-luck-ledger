@@ -3,8 +3,6 @@ package com.dropluckledger.plugin;
 import com.dropluckledger.capture.BossIndex;
 import com.dropluckledger.capture.BossIndex.KcLabel;
 import com.dropluckledger.history.HistoryInput;
-import com.dropluckledger.ledger.HistoryStage;
-import com.dropluckledger.ledger.Ledger;
 import com.google.gson.Gson;
 import com.google.gson.JsonParseException;
 import java.util.List;
@@ -13,20 +11,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Collects what the game and RuneLite already know about the player's history, for {@link com.dropluckledger.history.HistoryPlanner}:
+ * Collects what RuneLite's own plugins saved about the player's history, for {@link com.dropluckledger.history.HistoryPlanner}:
  * <ul>
  * <li>the kill counts RuneLite's Chat Commands plugin saved from every kill-count message it has seen,</li>
- * <li>the totals the Loot Tracker plugin saved (items per boss, over the last year, if "Remember loot" is on),</li>
- * <li>whatever the player has opened on screen: the Boss Kill Log and collection log pages (kept in the ledger).</li>
+ * <li>the totals the Loot Tracker plugin saved (items per boss, over the last year, if "Remember loot" is on).</li>
  * </ul>
- * None of these says which kill a drop came on, so history only ever brings in kill counts and owned copies.
+ * None of these says which kill a drop came on, so history only ever brings in kill counts and owned copies.  (The game's own
+ * screens, the Boss Kill Log and the collection log, are checked as the player opens them: {@code history.Catchup}.)
  */
 public final class HistorySources
 {
 	public static final String SRC_KC = "RuneLite kill counts";
 	public static final String SRC_LOOT = "Loot Tracker";
-	public static final String SRC_KILL_LOG = "Boss Kill Log";
-	public static final String SRC_COLLECTION = "Collection Log";
 
 	private static final String KILLCOUNT_GROUP = "killcount";
 	private static final String LOOT_TRACKER_GROUP = "loottracker";
@@ -50,39 +46,12 @@ public final class HistorySources
 	}
 
 	/**
-	 * Everything available now.  Call on the client thread (item names are looked up in the game).
+	 * Everything RuneLite's other plugins saved for the profile that is logged in.  Call on the client thread (item names are looked
+	 * up in the game).
 	 */
-	public static HistoryInput collect(Ledger ledger, Game game, Gson gson, BossIndex index)
+	public static HistoryInput collect(Game game, Gson gson, BossIndex index)
 	{
 		HistoryInput in = new HistoryInput();
-		readStage(ledger.history(), in);
-		readRuneLite(game, gson, index, in);
-		return in;
-	}
-
-	/**
-	 * What has been read off the screen so far.
-	 */
-	static void readStage(HistoryStage stage, HistoryInput in)
-	{
-		for (Map.Entry<String, Integer> e : stage.kc.entrySet())
-		{
-			in.addKc(e.getKey(), e.getValue(), SRC_KILL_LOG);
-		}
-		for (Map.Entry<String, Map<String, Integer>> page : stage.log.entrySet())
-		{
-			for (Map.Entry<String, Integer> item : page.getValue().entrySet())
-			{
-				in.addOwned(null, page.getKey(), item.getKey(), item.getValue(), SRC_COLLECTION);
-			}
-		}
-	}
-
-	/**
-	 * What RuneLite's other plugins saved for the profile that is logged in.
-	 */
-	static void readRuneLite(Game game, Gson gson, BossIndex index, HistoryInput in)
-	{
 		for (String key : game.savedKeys(KILLCOUNT_GROUP, ""))
 		{
 			Integer n = game.savedInt(KILLCOUNT_GROUP, key);
@@ -129,6 +98,7 @@ public final class HistorySources
 		{
 			in.addKc(e.getKey(), e.getValue(), SRC_LOOT);
 		}
+		return in;
 	}
 
 	private static Aggregate parse(Gson gson, String json)

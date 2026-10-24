@@ -6,12 +6,16 @@ import com.dropluckledger.capture.KcMessages;
 import com.dropluckledger.engine.Catalog;
 import com.dropluckledger.engine.Data;
 import com.dropluckledger.engine.Data.Boss;
+import com.dropluckledger.history.Backfill;
+import com.dropluckledger.history.Catchup;
 import com.dropluckledger.history.HistoryInput;
 import com.dropluckledger.history.HistoryPlanner;
+import com.dropluckledger.history.LoggedLoot;
 import com.dropluckledger.ledger.BossState;
 import com.dropluckledger.ledger.Ledger;
 import com.dropluckledger.ledger.LedgerCodec;
 import com.dropluckledger.ledger.LedgerSaver;
+import com.dropluckledger.plugin.DropLog;
 import com.dropluckledger.plugin.DropMessages;
 import com.dropluckledger.plugin.FileStore;
 import com.dropluckledger.plugin.Game;
@@ -29,6 +33,8 @@ import java.awt.Component;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -48,6 +54,8 @@ import net.runelite.api.GameState;
 import net.runelite.api.ScriptID;
 import net.runelite.api.Skill;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.InventoryID;
+import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.util.Filepath;
 import net.runelite.http.api.loottracker.LootRecordType;
@@ -94,9 +102,11 @@ final class Tracker
 		final Ledger ledger;
 		final Capture capture;
 		final HistoryPlanner planner;
+		final Catchup catchup;
 		final LedgerSaver saver;
 		final ItemIcons icons;
 		final FileStore iconStore;
+		final DropLog dropLog;
 
 		Core(Filepath dir, Data data, Gson gson, ScheduledExecutorService executor, Game game)
 		{
@@ -105,10 +115,21 @@ final class Tracker
 			this.ledger = new Ledger(data);
 			this.capture = new Capture(ledger, index);
 			this.planner = new HistoryPlanner(ledger, index);
+			this.catchup = new Catchup(ledger, capture, planner, index);
 			this.saver = new LedgerSaver(ledger, gson, executor, SAVE_DELAY_MS);
 			this.ledger.addListener(saver);
 			this.icons = new ItemIcons(game);
 			this.iconStore = new FileStore(dir, ICON_FILE);
+			this.dropLog = new DropLog(dir, executor);
+			this.capture.setLootLog((t, bossId, killNo, items, snap) ->
+			{
+				List<LoggedLoot.Item> all = new ArrayList<>();
+				for (Capture.Stack st : items)
+				{
+					all.add(new LoggedLoot.Item(st.name, st.qty));
+				}
+				dropLog.add(new LoggedLoot(t, bossId, killNo, all, snap));
+			});
 		}
 	}
 
@@ -130,8 +151,49 @@ final class Tracker
 
 	// widgets that were opened and are read on the next game tick
 	private boolean adventureLogLoaded;
-	private boolean killLogLoaded;
+	/**
+	 * The ledger as it was when the Boss Kill Log opened, until the log is read; null when none opened.
+	 */
+	private Catchup.Stamp killLogOpened;
 	private String houseOwner;
+	/**
+	 * Game ticks a collection log page is given to settle before it is checked: the server has the game draw a page and sends its
+	 * numbers and items around the same time, sometimes just after (then the page is drawn again, or its counts change under it).  A
+	 * page the player leaves sooner is not checked, so clicking quickly through the pages checks only the one stopped at.
+	 */
+	static final int SETTLE_TICKS = 2;
+	/**
+	 * The player variables a collection log page draws its counts from (the same three for every page).
+	 */
+	private static final int[] PAGE_COUNT_VARPS = {VarPlayerID.COLLECTION_CATEGORY_COUNT, VarPlayerID.COLLECTION_CATEGORY_COUNT2,
+		VarPlayerID.COLLECTION_CATEGORY_COUNT3};
+
+	/**
+	 * A collection log page as it was drawn, waiting to settle.
+	 */
+	private static final class DrawnPage
+	{
+		final GameReader.LogPage page;
+		final int tick;
+		/**
+		 * The ledger as it was when the page was drawn.
+		 */
+		final Catchup.Stamp stamp;
+		/**
+		 * The values of {@link #PAGE_COUNT_VARPS} when it was drawn.
+		 */
+		final int[] varps;
+
+		DrawnPage(GameReader.LogPage page, int tick, Catchup.Stamp stamp, int[] varps)
+		{
+			this.page = page;
+			this.tick = tick;
+			this.stamp = stamp;
+			this.varps = varps;
+		}
+	}
+
+	private DrawnPage drawnPage;
 	private boolean offeredHistory;
 	private boolean scanChecked;
 	/**
@@ -308,6 +370,8 @@ final class Tracker
 	{
 		c.saver.setStore(null);
 		c.ledger.removeListener(c.saver);
+		c.capture.reset(); // loot still waiting for its kill-count message is logged as it is
+		c.dropLog.flush();
 		saveIcons(c);
 	}
 
@@ -326,13 +390,20 @@ final class Tracker
 				bindAccount();
 				break;
 			case LOGIN_SCREEN:
+				drawnPage = null;
 				requestBind(null, TrackingState.LOGGED_OUT);
 				break;
 			case LOADING:
-			case HOPPING:
 				houseOwner = null;
 				break;
+			case HOPPING:
+			case CONNECTION_LOST:
+				// the server sends the player's values afresh: a page drawn before is not checked against them
+				houseOwner = null;
+				drawnPage = null;
+				break;
 			case LOGGING_IN:
+				drawnPage = null;
 				c.capture.reset();
 				colosseumWave = 0;
 				break;
@@ -384,8 +455,12 @@ final class Tracker
 		offeredHistory = false;
 		houseOwner = null;
 		adventureLogLoaded = false;
-		killLogLoaded = false;
+		killLogOpened = null;
+		drawnPage = null;
 		c.capture.reset();
+		c.catchup.clear();
+		// what was waiting goes to the account it came from; from now on the loot is logged for the new one (or not at all)
+		c.dropLog.setAccount(key == null ? null : Long.parseLong(key));
 		if (key == null)
 		{
 			state = why;
@@ -520,7 +595,7 @@ final class Tracker
 	 *
 	 * @param itemIds    the ids of the items received
 	 * @param quantities how many of each (same length)
-	 * @param metadata   what the Loot Tracker knows about the reward (the delve, ...), or null
+	 * @param metadata   what the Loot Tracker knows about the reward (the raid level, the delve, ...), or null
 	 */
 	void onLoot(LootRecordType type, String name, int amount, int[] itemIds, int[] quantities, Object metadata)
 	{
@@ -553,8 +628,8 @@ final class Tracker
 	}
 
 	/**
-	 * Boss settings the game shows along with a reward: the delve, the wave, the player's skill levels, whether the player was the
-	 * MVP, how many brothers or moons were defeated, whether the loot was the player's.
+	 * Boss settings the game shows along with a reward: the raid level, the raid points and the team, the delve, the wave, the
+	 * player's skill levels, whether the player was the MVP, how many brothers or moons were defeated, whether the loot was the player's.
 	 *
 	 * @param stacks the items, named as the game names them
 	 */
@@ -563,6 +638,37 @@ final class Tracker
 		Map<String, Object> hints = new HashMap<>();
 		switch (bossId)
 		{
+			case "chambers-of-xeric":
+			{
+				// the player's own points this raid, which the unique chance depends on (the game keeps them until the raid is left)
+				int points = game.varp(VarPlayerID.RAIDS_PLAYERSCORE);
+				if (points > 0)
+				{
+					hints.put("points", points);
+				}
+				break;
+			}
+			case "theatre-of-blood":
+			{
+				// the players in the raid, as RuneLite's own plugins count them
+				int team = 0;
+				for (int v : new int[] {VarbitID.TOB_CLIENT_P0, VarbitID.TOB_CLIENT_P1, VarbitID.TOB_CLIENT_P2, VarbitID.TOB_CLIENT_P3, VarbitID.TOB_CLIENT_P4})
+				{
+					team += Math.min(game.varbit(v), 1);
+				}
+				if (team > 0)
+				{
+					hints.put("team", team);
+				}
+				break;
+			}
+			case "tombs-of-amascut":
+				// the Loot Tracker gives the raid level, the team size and the damage done
+				if (metadata instanceof int[] && ((int[]) metadata).length > 0)
+				{
+					hints.put("raidLevel", ((int[]) metadata)[0]);
+				}
+				break;
 			case "scurrius":
 				// only the MVP (or a solo player) gets the rat meat
 				hints.put("mvp", has(stacks, "Raw rat meat") ? 1 : 0);
@@ -679,8 +785,12 @@ final class Tracker
 				adventureLogLoaded = true;
 				break;
 			case InterfaceID.KILL_LOG:
-				killLogLoaded = true;
+			{
+				// the server sends the counts as the log opens: a kill the ledger takes after this is not in them
+				Core c = core;
+				killLogOpened = c == null ? null : c.catchup.stamp();
 				break;
+			}
 			default:
 				break;
 		}
@@ -696,7 +806,7 @@ final class Tracker
 		if (state != TrackingState.TRACKING)
 		{
 			adventureLogLoaded = false;
-			killLogLoaded = false;
+			killLogOpened = null;
 			return;
 		}
 		final int tick = game.tickCount();
@@ -725,24 +835,114 @@ final class Tracker
 				houseOwner = owner;
 			}
 		}
-		if (killLogLoaded && isMine(houseOwner))
+		if (killLogOpened != null)
 		{
-			killLogLoaded = false;
-			Map<String, Integer> kills = GameReader.killLog(game);
+			Catchup.Stamp opened = killLogOpened;
+			killLogOpened = null;
+			Map<String, Integer> kills = isMine(houseOwner) ? GameReader.killLog(game) : null;
 			if (kills != null && !kills.isEmpty())
 			{
-				c.ledger.updateHistory(h ->
-				{
-					h.kc.putAll(kills);
-					h.kcTime = c.ledger.now();
-				});
-				LedgerPanel p = panel;
-				if (p != null)
-				{
-					SwingUtilities.invokeLater(() -> p.historyRead("Boss Kill Log: " + kills.size() + " bosses read"));
-				}
+				// the log comes in one piece from the server: it is checked at once, and nothing changes until the player agrees
+				c.catchup.addKillLog(kills, opened);
+				offerSync(c, "Boss Kill Log read");
 			}
 		}
+		if (drawnPage != null && tick - drawnPage.tick >= SETTLE_TICKS)
+		{
+			DrawnPage d = drawnPage;
+			drawnPage = null;
+			settled(c, d);
+		}
+	}
+
+	/**
+	 * A collection log page has had time to settle: its items are checked against the ledger if they are the ones the game holds for
+	 * the page now.
+	 */
+	private void settled(Core c, DrawnPage d)
+	{
+		GameReader.LogPage page = d.page;
+		// the boss kill counts under the title, as the game holds them now
+		Map<String, Integer> shown = new LinkedHashMap<>();
+		for (Map.Entry<String, Integer> e : page.counts.entrySet())
+		{
+			if (c.index.kcShown(e.getKey()) != null)
+			{
+				shown.put(e.getKey(), e.getValue());
+			}
+		}
+		Map<String, Integer> counts = GameReader.settledCounts(shown, d.varps, pageCountVarps());
+		boolean countsSettled = counts.size() == shown.size();
+		boolean bodyTypeSwap = game.varbit(VarbitID.COLLECTION_PLAYER_BODYTYPE) == 1;
+		boolean itemsSettled = GameReader.itemsMatch(page, game.inventory(InventoryID.COLLECTION_TRANSMIT), bodyTypeSwap);
+		if (!countsSettled || !itemsSettled)
+		{
+			log.debug("Collection Log {}: {} of {} counts settled, items {}", page.title, counts.size(), shown.size(), itemsSettled ? "settled" : "not settled");
+		}
+		// what settled is checked: a count that did not leaves its boss as it is, and items that did not take part at all
+		if (!itemsSettled && (counts.isEmpty() || !countsSettled))
+		{
+			historyRead("Collection Log, " + page.title + ": it was still loading, so it was not checked. Open it again to check it.");
+			return;
+		}
+		Collection<String> listed = itemsSettled ? page.ids.keySet() : Collections.<String>emptyList();
+		if (!c.catchup.unchangedSince(d.stamp, listed, counts.keySet()))
+		{
+			// a kill or a drop came while the page opened (or a list was added): its numbers may be older than the ledger's
+			historyRead("Collection Log, " + page.title + ": your ledger changed while it opened, so it was not checked. Open it again to check it.");
+			return;
+		}
+		c.catchup.addPage(page.title, counts, itemsSettled ? page.items : Collections.<String, Integer>emptyMap(), listed, d.stamp);
+		offerSync(c, !itemsSettled ? "Collection Log, " + page.title + ": its items were still loading, so only its kill count was checked"
+			: !countsSettled ? "Collection Log, " + page.title + ": its kill count was still loading, so only its items were checked"
+			: "Collection Log page read: " + page.title);
+	}
+
+	private int[] pageCountVarps()
+	{
+		int[] v = new int[PAGE_COUNT_VARPS.length];
+		for (int i = 0; i < v.length; i++)
+		{
+			v[i] = game.varp(PAGE_COUNT_VARPS[i]);
+		}
+		return v;
+	}
+
+	/**
+	 * Works out what the game's records read so far would change and offers it in the panel; when nothing would change, says the
+	 * page was read.
+	 *
+	 * @param read what was just read, for the note when the ledger already matches
+	 */
+	private void offerSync(Core c, String read)
+	{
+		HistoryPlanner.Plan plan = c.catchup.plan();
+		LedgerPanel p = panel;
+		if (p == null)
+		{
+			return;
+		}
+		if (Catchup.worthShowing(plan))
+		{
+			String text = Catchup.describe(plan);
+			SwingUtilities.invokeLater(() -> p.syncReady(plan, text));
+		}
+		else
+		{
+			historyRead(read + ". Your ledger matches it.");
+		}
+	}
+
+	private void historyRead(String text)
+	{
+		SwingUtilities.invokeLater(() ->
+		{
+			LedgerPanel p = panel;
+			if (p != null)
+			{
+				p.historyRead(text);
+			}
+		});
 	}
 
 	/**
@@ -755,7 +955,7 @@ final class Tracker
 		{
 			return;
 		}
-		if (!isMine(houseOwner))
+		if (!ownLogOpen())
 		{
 			return;
 		}
@@ -768,16 +968,20 @@ final class Tracker
 		{
 			c.icons.learn(e.getKey(), e.getValue());
 		}
-		c.ledger.updateHistory(h ->
+		// checked once it has settled; a page drawn again before then (the next page, or this one with its items) replaces it
+		drawnPage = new DrawnPage(page, game.tickCount(), c.catchup.stamp(), pageCountVarps());
+	}
+
+	/**
+	 * True when the collection log on screen is the player's own: not one opened from the book in someone else's house.
+	 */
+	private boolean ownLogOpen()
+	{
+		if (game.varbit(VarbitID.COLLECTION_POH_HOST_BOOK_OPEN) == 0)
 		{
-			h.log.put(page.title, new LinkedHashMap<>(page.items));
-			h.logTime = c.ledger.now();
-		});
-		LedgerPanel p = panel;
-		if (p != null)
-		{
-			SwingUtilities.invokeLater(() -> p.historyRead("Collection Log page read: " + page.title));
+			return true;
 		}
+		return houseOwner != null && houseOwner.equals(game.playerName());
 	}
 
 	/**
@@ -799,7 +1003,7 @@ final class Tracker
 			HistoryPlanner.Plan plan;
 			try
 			{
-				HistoryInput in = HistorySources.collect(c.ledger, game, gson, c.index);
+				HistoryInput in = HistorySources.collect(game, gson, c.index);
 				plan = c.planner.plan(in);
 			}
 			catch (RuntimeException ex)
@@ -828,6 +1032,7 @@ final class Tracker
 		return executor.submit(() ->
 		{
 			c.saver.flushNow();
+			c.dropLog.flush();
 			saveIcons(c);
 		});
 	}
@@ -906,6 +1111,36 @@ final class Tracker
 		}
 
 		@Override
+		public int[] applySync(HistoryPlanner.Plan plan)
+		{
+			Core c = core;
+			if (c == null || state != TrackingState.TRACKING)
+			{
+				return new int[4];
+			}
+			int[] done = c.catchup.apply(plan);
+			// pages read after the list was made make the next one
+			HistoryPlanner.Plan next = c.catchup.plan();
+			LedgerPanel p = panel;
+			if (p != null && Catchup.worthShowing(next))
+			{
+				String text = Catchup.describe(next);
+				SwingUtilities.invokeLater(() -> p.syncReady(next, text));
+			}
+			return done;
+		}
+
+		@Override
+		public void dismissSync()
+		{
+			Core c = core;
+			if (c != null)
+			{
+				c.catchup.clear();
+			}
+		}
+
+		@Override
 		public void exportBackup(Component parent)
 		{
 			final Core c = core;
@@ -973,6 +1208,87 @@ final class Tracker
 				executor.execute(() -> c.ledger.replaceWith(backup));
 			}
 		}
+
+		@Override
+		public void backfill(String bossId, String item)
+		{
+			final Core c = core;
+			if (c == null || state != TrackingState.TRACKING)
+			{
+				return;
+			}
+			executor.execute(() ->
+			{
+				try
+				{
+					Backfill.Result r = Backfill.apply(c.ledger, c.index, bossId, item, c.dropLog.read(bossId));
+					if (!r.isEmpty())
+					{
+						done(backfillText(item, r));
+					}
+				}
+				catch (IOException ex)
+				{
+					log.warn("Could not read the drop log", ex);
+				}
+			});
+		}
+
+		@Override
+		public void eraseDropLog()
+		{
+			final Core c = core;
+			if (c == null || state != TrackingState.TRACKING)
+			{
+				return;
+			}
+			executor.execute(() ->
+			{
+				try
+				{
+					c.dropLog.erase();
+				}
+				catch (IOException ex)
+				{
+					log.warn("Could not delete the drop log", ex);
+				}
+			});
+		}
+	}
+
+	/**
+	 * What the drop log brought in for an item just tracked: "Tanzanite fang: 2 copies you got before you tracked it were added from
+	 * the drop log, at the kills they came on."
+	 */
+	static String backfillText(String item, Backfill.Result r)
+	{
+		StringBuilder b = new StringBuilder(item).append(": ");
+		if (r.added > 0)
+		{
+			b.append(r.added == 1 ? "1 copy" : r.added + " copies").append(" you got before you tracked it ").append(r.added == 1 ? "was" : "were")
+				.append(" added from the drop log, at the kill").append(r.added == 1 ? " it" : "s they").append(" came on");
+		}
+		if (r.numbered > 0)
+		{
+			b.append(r.added > 0 ? "; " : "").append(r.numbered == 1 ? "1 copy" : r.numbered + " copies").append(" from your game history now ")
+				.append(r.numbered == 1 ? "has its" : "have their").append(" kill number");
+		}
+		return b.append('.').toString();
+	}
+
+	/**
+	 * Shows a short note at the top of the side panel that something was done.
+	 */
+	private void done(String text)
+	{
+		SwingUtilities.invokeLater(() ->
+		{
+			LedgerPanel p = panel;
+			if (p != null)
+			{
+				p.showDone(text);
+			}
+		});
 	}
 
 	/**

@@ -20,6 +20,14 @@ final class FakeHost implements LedgerPanel.Host
 	int exports;
 	int imports;
 	final List<Ledger> replaced = new ArrayList<>();
+	final List<String> backfilled = new ArrayList<>();
+	int dropLogsErased;
+	/**
+	 * The lists from the game's records the panel asked to add, and what the plugin answers.
+	 */
+	final List<HistoryPlanner.Plan> synced = new ArrayList<>();
+	int[] syncAnswer = {0, 0, 0, 0};
+	int syncDismissals;
 
 	@Override
 	public TrackingState state()
@@ -32,6 +40,19 @@ final class FakeHost implements LedgerPanel.Host
 	{
 		planRequests++;
 		then.accept(plan);
+	}
+
+	@Override
+	public int[] applySync(HistoryPlanner.Plan plan)
+	{
+		synced.add(plan);
+		return syncAnswer;
+	}
+
+	@Override
+	public void dismissSync()
+	{
+		syncDismissals++;
 	}
 
 	@Override
@@ -54,5 +75,17 @@ final class FakeHost implements LedgerPanel.Host
 	public void replaceLedger(Ledger backup)
 	{
 		replaced.add(backup);
+	}
+
+	@Override
+	public void backfill(String bossId, String item)
+	{
+		backfilled.add(bossId + ":" + item);
+	}
+
+	@Override
+	public void eraseDropLog()
+	{
+		dropLogsErased++;
 	}
 }

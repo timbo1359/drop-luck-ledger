@@ -172,6 +172,11 @@ public final class Data
 		 */
 		public List<String> extraLoot = new ArrayList<>();
 		/**
+		 * The per-kill setting that counts the loots of those other monsters (EXTRACOUNT): each bodyguard loot the plugin sees adds one to
+		 * the "Bodyguards killed with each kill" of the kill it belongs to.  Null for most bosses.
+		 */
+		public String extraCount;
+		/**
 		 * Settings a kill has when its regular loot arrives (ONLOOT) and when it never does (NOLOOT): another player got it, the
 		 * corpse was destroyed, the loot was sacrificed.  Empty for most bosses.
 		 */
@@ -243,6 +248,23 @@ public final class Data
 			for (Row r : pets)
 			{
 				r.prepare();
+			}
+			// the rows of each no-duplicate group, for the expressions that read how much of the whole set is owned (setowned)
+			Map<String, List<Row>> groups = new LinkedHashMap<>();
+			for (Row r : allRows())
+			{
+				String g = r.attrs.get("nodup");
+				if (g != null && !g.isEmpty())
+				{
+					groups.computeIfAbsent(g, k -> new ArrayList<>()).add(r);
+				}
+			}
+			for (List<Row> g : groups.values())
+			{
+				for (Row r : g)
+				{
+					r.group = g;
+				}
 			}
 		}
 
@@ -408,6 +430,19 @@ public final class Data
 		public transient Expr rollsFn;
 		public transient Double cancels;
 		public transient Double abs;
+		/**
+		 * A follow table's share for the boss's pet (petslot=a/b), 0 for none: once the pet is owned the slot is gone and the other
+		 * rows share it out (the Abyssal Sire's Font of Consumption is out of 123 instead of 128 once the orphan is owned).
+		 */
+		public transient double petslot;
+		/**
+		 * The rolls never give the same row twice (distinct=1, the Chambers of Xeric's standard loot).
+		 */
+		public transient boolean distinct;
+		/**
+		 * Rolled whoever got the kill's own loot: the boss's loot share (SCALE) does not apply (noscale=1, the God Wars bodyguards).
+		 */
+		public transient boolean noscale;
 
 		void prepare()
 		{
@@ -424,6 +459,9 @@ public final class Data
 			rollsFn = opts.containsKey("rolls") ? Expr.parse(opts.get("rolls")) : null;
 			cancels = Row.parseCancels(opts.get("cancels"));
 			abs = has(opts, "abs") ? Expr.rate(opts.get("abs")).eval(new Env()) : null;
+			petslot = has(opts, "petslot") ? Expr.rate(opts.get("petslot")).eval(new Env()) : 0;
+			distinct = has(opts, "distinct");
+			noscale = has(opts, "noscale");
 			for (Row r : items)
 			{
 				r.prepare();
@@ -527,8 +565,20 @@ public final class Data
 		public transient Double cancels;
 		public transient Seq seq;
 		public transient double pity;
+		/**
+		 * The rows of the row's no-duplicate group (this one included), or null when it is in none: what {@code setowned} reads.
+		 */
+		public transient List<Row> group;
 
 		private static final Pattern SEQ = Pattern.compile("^([^:]+):(\\d+(?:,\\d+)*)$");
+
+		/**
+		 * True when the drop rate is not published yet ("unknown"): the row is shown and tracked, but never rolled.
+		 */
+		public boolean unknownRate()
+		{
+			return rate != null && "unknown".equalsIgnoreCase(rate.trim());
+		}
 
 		void prepare()
 		{

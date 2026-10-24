@@ -192,9 +192,9 @@ public class FormsTest
 	{
 		HistoryPlanner.Plan plan = plan();
 		HistoryForm f = Swings.get(() -> new HistoryForm(plan));
-		assertEquals("Will add: 2 kill counts and 3 owned items (2 lines)", f.summaryLabel().getText());
+		assertEquals("Will set 2 kill counts, add 3 owned items (2 lines)", f.summaryLabel().getText());
 		Swings.edt(() -> f.tickKc(0, false));
-		assertEquals("Will add: 1 kill count and 3 owned items (2 lines)", f.summaryLabel().getText());
+		assertEquals("Will set 1 kill count, add 3 owned items (2 lines)", f.summaryLabel().getText());
 		Swings.edt(() -> f.tickItem(0, false));
 		assertTrue(f.summaryLabel().getText(), f.summaryLabel().getText().contains("(1 line)"));
 		Swings.edt(() ->
@@ -204,6 +204,36 @@ public class FormsTest
 		});
 		assertEquals("Nothing is ticked.", f.summaryLabel().getText());
 		assertTrue(plan.isEmpty());
+	}
+
+	@Test
+	public void theCheckAgainstTheGameShowsCountsThatComeDownCopiesThatGoAndItsNotes()
+	{
+		fx.ledger.setKc("skotizo", 117);
+		fx.ledger.setKc("zulrah", 300);
+		fx.ledger.logDrop("zulrah", "Magic fang", 200, 1, null, com.dropluckledger.ledger.Drop.SRC_MANUAL);
+		fx.ledger.logDrop("zulrah", "Tanzanite fang", 100, 1, null, com.dropluckledger.ledger.Drop.SRC_MANUAL);
+		com.dropluckledger.history.Catchup c = new com.dropluckledger.history.Catchup(fx.ledger,
+			new com.dropluckledger.capture.Capture(fx.ledger, fx.index), fx.planner, fx.index);
+		java.util.Map<String, Integer> log = new java.util.LinkedHashMap<>();
+		log.put("Skotizo", 5);
+		log.put("Zulrah", 150);
+		c.addKillLog(log, c.stamp());
+		c.addPage("Zulrah", java.util.Collections.<String, Integer>emptyMap(), java.util.Collections.singletonMap("Magic fang", 1),
+			java.util.Arrays.asList("Magic fang", "Tanzanite fang"), c.stamp());
+		HistoryPlanner.Plan plan = c.plan();
+		HistoryForm f = Swings.get(() -> new HistoryForm(plan));
+		assertEquals("Will set 2 kill counts, take away 1 item the collection log does not show", f.summaryLabel().getText());
+		javax.swing.JTable kills = Swings.all(f, javax.swing.JTable.class).get(0);
+		javax.swing.JTable items = Swings.all(f, javax.swing.JTable.class).get(1);
+		// the game's count, the ledger's, and what the line does
+		assertEquals("5", kills.getValueAt(0, 2));
+		assertEquals("117", kills.getValueAt(0, 3));
+		assertEquals("lowers it to the game's", kills.getValueAt(0, 4));
+		assertEquals("150", kills.getValueAt(1, 2));
+		assertEquals("lowers it to 200 (a drop's kill)", kills.getValueAt(1, 4));
+		assertEquals("\u22121 (fewer in the log)", items.getValueAt(0, 5));
+		assertTrue(Swings.text(f), Swings.text(f).contains("Zulrah: the game counts 150 kills, but the ledger has a drop at kill 200"));
 	}
 
 	@Test

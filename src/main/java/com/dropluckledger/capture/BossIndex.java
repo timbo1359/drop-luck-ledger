@@ -49,6 +49,7 @@ public final class BossIndex
 		{"Barrows chest", "barrows"},
 		{"Barrows chests", "barrows"},
 		{"Lunar Chests", "moons-of-peril"},
+		{"Grotesque Guardian", "grotesque-guardians"}, // the singular, as the collection log words it
 		{"Fortis Colosseum", "fortis-colosseum"},
 		{"Colosseum", "fortis-colosseum"},
 	};
@@ -267,6 +268,47 @@ public final class BossIndex
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * The words the game's screens put after the activity in a count ("Zulrah kills", "Barrows Chests opened", "Chambers of
+	 * Xeric completions"), longest first.
+	 */
+	private static final String[] SHOWN_SUFFIXES = {" kill count", " completion count", " kills", " kill", " completions",
+		" completion", " completed", " opened", " count"};
+
+	/**
+	 * The kill-count label for a count the game shows on a screen: a row of the Boss Kill Log ("Chambers of Xeric: Challenge
+	 * Mode") or a line of a collection log page ("Zulrah kills", "Chambers of Xeric (CM) completions").
+	 *
+	 * @return null when it is not a count of a tracked boss
+	 */
+	public KcLabel kcShown(String shown)
+	{
+		if (shown == null)
+		{
+			return null;
+		}
+		String s = shown.trim();
+		KcLabel kl = kc(s);
+		if (kl != null)
+		{
+			return kl;
+		}
+		String lower = s.toLowerCase(java.util.Locale.ROOT);
+		for (String suffix : SHOWN_SUFFIXES)
+		{
+			if (lower.endsWith(suffix) && lower.length() > suffix.length())
+			{
+				s = s.substring(0, s.length() - suffix.length()).trim();
+				break;
+			}
+		}
+		// short forms of the modes: "(CM)", "(HM)", "(Entry)"
+		s = s.replaceAll("(?i)\\(\\s*cm\\s*\\)", "Challenge Mode")
+			.replaceAll("(?i)\\(\\s*hm\\s*\\)", "Hard Mode")
+			.replaceAll("(?i)\\(\\s*(hard|entry|expert)\\s*\\)", "$1 Mode");
+		return kc(s);
 	}
 
 	/**

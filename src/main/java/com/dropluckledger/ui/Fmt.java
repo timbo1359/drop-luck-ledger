@@ -9,7 +9,6 @@ import java.util.Locale;
  */
 final class Fmt
 {
-	private static final String[] SUFFIX = {"th", "st", "nd", "rd"};
 
 	private Fmt()
 	{
@@ -37,6 +36,14 @@ final class Fmt
 			return n > 0 ? "∞" : "-∞";
 		}
 		return String.format(Locale.US, "%,d", Math.round(n));
+	}
+
+	/**
+	 * {@link #pct} for markup: "&lt;0.1%" would otherwise be read as the start of a tag and vanish.
+	 */
+	static String pctHtml(Double p)
+	{
+		return Look.esc(pct(p));
 	}
 
 	/**
@@ -90,30 +97,6 @@ final class Fmt
 			return "1/" + fixed(x, 1).replaceAll("\\.0$", "");
 		}
 		return "1/" + num(x);
-	}
-
-	/**
-	 * "1st", "22nd", "99th": a percentile, kept between 1 and 99.
-	 */
-	static String ord(double n)
-	{
-		int v = (int) Math.min(99, Math.max(1, Math.round(n)));
-		int m = v % 100;
-		int k = m - 20;
-		String s;
-		if (k >= 0 && k % 10 >= 1 && k % 10 <= 3)
-		{
-			s = SUFFIX[k % 10];
-		}
-		else if (m >= 1 && m <= 3)
-		{
-			s = SUFFIX[m];
-		}
-		else
-		{
-			s = SUFFIX[0];
-		}
-		return v + s;
 	}
 
 	/**

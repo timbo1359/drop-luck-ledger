@@ -77,17 +77,38 @@ public class BossIndexTest
 	@Test
 	public void theBossesThePluginLeavesOutAreNotFound()
 	{
-		assertNull(kc("Your completed Chambers of Xeric count is: <col=ff0000>51</col>."));
-		assertNull(kc("Your completed Chambers of Xeric Challenge Mode count is: <col=ff0000>13</col>."));
-		assertNull(kc("Your completed Theatre of Blood: Hard Mode count is: <col=ff0000>73</col>."));
-		assertNull(kc("Your completed Tombs of Amascut: Expert Mode count is: <col=ff0000>1</col>."));
 		assertNull(kc("Your Royal Titans kill count is: <col=ff0000>40</col>."));
 		assertNull(kc("Your subdued Wintertodt count is: <col=ff0000>4</col>."));
-		assertNull(index.loot("Chambers of Xeric"));
-		assertNull(index.loot("Theatre of Blood"));
-		assertNull(index.loot("Tombs of Amascut"));
 		assertNull(index.loot("Eldric the Ice King"));
 		assertNull(index.loot("Reward cart (Wintertodt)"));
+	}
+
+	@Test
+	public void theRaidsAndTheirModesAreFound()
+	{
+		KcLabel cox = kc("Your completed Chambers of Xeric count is: <col=ff0000>51</col>.");
+		assertEquals("chambers-of-xeric", cox.bossId);
+		assertEquals(0, cox.patch.get("cm"));
+		assertEquals(1, kc("Your completed Chambers of Xeric Challenge Mode count is: <col=ff0000>13</col>.").patch.get("cm"));
+		KcLabel hm = kc("Your completed Theatre of Blood: Hard Mode count is: <col=ff0000>73</col>.");
+		assertEquals("theatre-of-blood", hm.bossId);
+		assertEquals("hard", hm.patch.get("mode"));
+		assertEquals("entry", kc("Your completed Theatre of Blood: Entry Mode count is: <col=ff0000>2</col>.").patch.get("mode"));
+		assertEquals("normal", kc("Your completed Theatre of Blood count is: <col=ff0000>12</col>.").patch.get("mode"));
+		assertEquals("tombs-of-amascut", kc("Your completed Tombs of Amascut: Expert Mode count is: <col=ff0000>1</col>.").bossId);
+		assertEquals("chambers-of-xeric", index.loot("Chambers of Xeric"));
+		assertEquals("theatre-of-blood", index.loot("Theatre of Blood"));
+		assertEquals("tombs-of-amascut", index.loot("Tombs of Amascut"));
+		// the new raid: its wording is not known yet, so either spelling of its name is taken
+		assertEquals("the-fractured-archive", kc("Your completed The Fractured Archive count is: <col=ff0000>3</col>.").bossId);
+		assertEquals("the-fractured-archive", kc("Your Fractured Archive completion count is: <col=ff0000>3</col>.").bossId);
+		assertEquals("the-fractured-archive", index.loot("The Fractured Archive"));
+		assertEquals("the-fractured-archive", index.loot("Fractured Archive"));
+		// and a collection log page's count lines
+		assertEquals(1, index.kcShown("Chambers of Xeric (CM) completions").patch.get("cm"));
+		assertEquals("hard", index.kcShown("Theatre of Blood (HM) completions").patch.get("mode"));
+		assertEquals("entry", index.kcShown("Theatre of Blood: Entry Mode completions").patch.get("mode"));
+		assertEquals("the-fractured-archive", index.kcShown("The Fractured Archive completions").bossId);
 	}
 
 	@Test
@@ -105,6 +126,29 @@ public class BossIndexTest
 		assertEquals("the-whisperer", w.bossId);
 		assertEquals(1, w.patch.get("awakened"));
 		assertNull(index.kc("Awakened Zulrah"));
+	}
+
+	@Test
+	public void countsOnTheGamesScreensFindTheirBoss()
+	{
+		// collection log page lines
+		assertEquals("zulrah", index.kcShown("Zulrah kills").bossId);
+		assertEquals("barrows", index.kcShown("Barrows Chests opened").bossId);
+		assertEquals("moons-of-peril", index.kcShown("Lunar Chests opened").bossId);
+		assertEquals("the-gauntlet", index.kcShown("Gauntlet completions").bossId);
+		assertEquals("the-corrupted-gauntlet", index.kcShown("Corrupted Gauntlet completions").bossId);
+		KcLabel aw = index.kcShown("Duke Sucellus (awakened) kills");
+		assertEquals("duke-sucellus", aw.bossId);
+		assertEquals("Awakened Duke Sucellus", aw.label);
+		assertEquals("Duke Sucellus", index.kcShown("Duke Sucellus kill count").label);
+		// Boss Kill Log rows
+		assertEquals("vorkath", index.kcShown("Vorkath").bossId);
+		assertEquals("barrows", index.kcShown("Barrows Chests").bossId);
+		// not a boss
+		assertNull(index.kcShown("Obtained"));
+		assertNull(index.kcShown("Chompy bird kills"));
+		assertNull(index.kcShown("kills"));
+		assertNull(index.kcShown(null));
 	}
 
 	@Test

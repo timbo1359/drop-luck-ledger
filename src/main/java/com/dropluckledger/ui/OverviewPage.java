@@ -174,9 +174,10 @@ final class OverviewPage extends Column
 	{
 		Column c = new Column(6);
 		c.add(Look.wrapped("Nothing tracked yet. Kills and drops you get in game are recorded automatically from now on. "
-			+ "To bring in what you already have, add your game history, or pick a boss below and set its kill count.", Look.PAGE_TEXT, Look.small(), Look.MUTED));
+			+ "To bring in what you already have, open your Boss Kill Log (in the Adventure Log) and your Collection Log pages in game, add what RuneLite "
+			+ "saved, or pick a boss below and set its kill count.", Look.PAGE_TEXT, Look.small(), Look.MUTED));
 		JButton b = Look.button("Add my game history…");
-		b.setToolTipText("Reads your kill counts and collection log from the game and shows you what it would add");
+		b.setToolTipText("Brings in the kill counts and loot RuneLite's own plugins saved, after showing what it would add");
 		b.addActionListener(e -> ctx.reviewHistory());
 		c.add(b);
 		return c;
@@ -208,7 +209,9 @@ final class OverviewPage extends Column
 		Column c = new Column(3);
 		c.add(heading(SPOONS, "The items you have been luckiest with, luckiest first: copies that came ahead of the drop rate. Under each item: the boss, "
 			+ "and the copies you got against the copies your kills would give on average. The percentage is the chance, from all your kills, that you "
-			+ "would have the next copy by now, so a low figure means you are well ahead. Hover a line for the figures; click to open the boss."));
+			+ "would have the next copy by now, so a low figure means you are well ahead. The Barrows equipment and each moon's set at the Moons of "
+			+ "Peril count as one line, all their pieces together: with that many rare pieces, some are bound to come early. Hover a line for the "
+			+ "figures; click to open the boss."));
 		List<Views.Rank> rows = v.spoons;
 		if (rows.isEmpty())
 		{
@@ -247,16 +250,18 @@ final class OverviewPage extends Column
 		JLabel name = new JLabel(Look.html(126, Look.esc(r.item) + "<br>" + Look.dim(Look.esc(r.where) + " · " + r.got + " of " + Fmt.expected(r.expected))));
 		name.setFont(Look.small());
 		name.setForeground(Look.TEXT);
-		ItemIcon.set(name, ctx.icons(), r.item, ctx.pictures(), 24, 22);
+		ItemIcon.set(name, ctx.icons(), r.icon, ctx.pictures(), 24, 22);
 		row.add(name, BorderLayout.CENTER);
 		row.add(figure(Fmt.pct(r.chance), bar, r.label.text, color), BorderLayout.EAST);
 		Meter m = new Meter(3);
 		m.set(r.chance, bar);
 		row.add(m, BorderLayout.SOUTH);
-		row.setToolTipText(Look.tip("<b>" + Look.esc(r.item) + "</b> " + Look.dim(Look.esc(r.where)) + "<br>" + (r.pooled ? "All these bosses together: " : "")
-			+ r.got + " received vs " + Fmt.expected(r.expected) + " expected<br><b>" + Fmt.pct(r.chance) + "</b> chance of "
-			+ (r.got > 0 ? "copy " + (r.got + 1) : "one") + " by now<br>" + Look.colored("<b>" + Look.esc(r.label.text) + "</b>", color)
-			+ " · luckier than " + Fmt.pct(r.pct) + " of players with the same kills<br>" + Look.dim("Click to open")));
+		String together = r.pooled ? "All these bosses together: " : r.pieces > 0 ? "All " + r.pieces + " pieces together: " : "";
+		String next = r.pieces > 0 ? (r.got > 0 ? "piece " + (r.got + 1) : "a piece") : r.got > 0 ? "copy " + (r.got + 1) : "one";
+		row.setToolTipText(Look.tip("<b>" + Look.esc(r.item) + "</b> " + Look.dim(Look.esc(r.where)) + "<br>" + together
+			+ r.got + " received vs " + Fmt.expected(r.expected) + " expected<br><b>" + Fmt.pctHtml(r.chance) + "</b> chance of "
+			+ next + " by now<br>" + Look.colored("<b>" + Look.esc(r.label.text) + "</b>", color)
+			+ " · luckier than " + Fmt.pctHtml(r.pct) + " of players with the same kills<br>" + Look.dim("Click to open")));
 		Look.clickable(row, () -> ctx.openBoss(r.bossId));
 		return row;
 	}
@@ -310,11 +315,11 @@ final class OverviewPage extends Column
 			if (b.any != null)
 			{
 				tip.append("<br>Uniques together: ").append(b.any.O).append(" received vs ").append(Fmt.expected(b.any.expected)).append(" expected<br><b>")
-					.append(Fmt.pct(b.any.another)).append("</b> chance of ").append(b.any.O > 0 ? "another" : "one").append(" by now");
+					.append(Fmt.pctHtml(b.any.another)).append("</b> chance of ").append(b.any.O > 0 ? "another" : "one").append(" by now");
 				if (!"na".equals(b.any.label.key))
 				{
 					tip.append(" · ").append(Look.colored("<b>" + Look.esc(b.any.label.text) + "</b>", Look.luck(b.any.label.key))).append(" (luckier than ")
-						.append(Fmt.pct(b.any.pct)).append(" of players)");
+						.append(Fmt.pctHtml(b.any.pct)).append(" of players)");
 				}
 			}
 			if (b.total > 0)
@@ -365,8 +370,8 @@ final class OverviewPage extends Column
 			m.set(known ? p.another : 0, bar);
 			row.add(m, BorderLayout.SOUTH);
 			row.setToolTipText(Look.tip("<b>" + Look.esc(p.name) + "</b><br>" + Look.esc(per.toString()) + " kills<br>" + p.O + " received vs " + Fmt.expected(p.expected)
-				+ " expected" + (known ? "<br><b>" + Fmt.pct(p.another) + "</b> chance of " + (p.O > 0 ? "another" : "one") + " by now<br>"
-				+ Look.colored("<b>" + Look.esc(p.label.text) + "</b>", color) + " · luckier than " + Fmt.pct(p.pct) + " of players" : "")
+				+ " expected" + (known ? "<br><b>" + Fmt.pctHtml(p.another) + "</b> chance of " + (p.O > 0 ? "another" : "one") + " by now<br>"
+				+ Look.colored("<b>" + Look.esc(p.label.text) + "</b>", color) + " · luckier than " + Fmt.pctHtml(p.pct) + " of players" : "")
 				+ "<br>" + Look.dim("Click to open")));
 			Look.clickable(row, () -> ctx.openBoss(openId));
 			c.add(row);

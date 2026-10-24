@@ -87,13 +87,15 @@ public class HistoryPlannerTest
 	{
 		HistoryInput in = new HistoryInput();
 		in.addKc("Chambers of Xeric", 50, "Boss Kill Log");
+		in.addKc("Chambers of Xeric: Challenge Mode", 5, "Boss Kill Log");
 		in.addKc("Duke Sucellus", 100, "Boss Kill Log");
 		in.addKc("Awakened Duke Sucellus", 30, "Boss Kill Log");
+		in.addKc("Royal Titans", 9, "Boss Kill Log");
 		Plan plan = planner.plan(in);
-		// the raids are not in the plugin
-		assertNull(kcRow(plan, "chambers-of-xeric"));
-		assertEquals(Arrays.asList("Chambers of Xeric 50"), plan.kcSkipped);
+		// the Royal Titans are not in the plugin
+		assertEquals(Arrays.asList("Royal Titans 9"), plan.kcSkipped);
 		assertEquals(130, kcRow(plan, "duke-sucellus").to);
+		assertEquals(55, kcRow(plan, "chambers-of-xeric").to);
 		planner.apply(plan);
 		BossState d = ledger.copyOf("duke-sucellus");
 		assertEquals(130, d.kc);
@@ -102,6 +104,13 @@ public class HistoryPlannerTest
 		assertEquals(101, d.segs.get(1).from);
 		assertEquals(1, ((Number) d.paramsAt(130).get("awakened")).intValue());
 		assertEquals(0, ((Number) d.paramsAt(100).get("awakened")).intValue());
+		// the old raids: normal, then challenge mode, all at the usual points until the player sets theirs
+		BossState c = ledger.copyOf("chambers-of-xeric");
+		assertEquals(55, c.kc);
+		assertEquals(0, ((Number) c.paramsAt(50).getOrDefault("cm", 0)).intValue());
+		assertEquals(1, ((Number) c.paramsAt(51).get("cm")).intValue());
+		assertNull(c.paramsAt(51).get("points"));
+		assertEquals(30_000, ((Number) com.dropluckledger.engine.Engine.defaultParams(data.boss("chambers-of-xeric")).get("points")).intValue());
 	}
 
 	@Test
@@ -200,6 +209,63 @@ public class HistoryPlannerTest
 		ItemRow cubArtio = itemRow(plan, "artio", "Callisto cub");
 		assertTrue(cub != null || cubArtio != null);
 		assertTrue((cub != null ? cub : cubArtio).assumed);
+	}
+
+	private static long withKill(BossState s, String item, int kill)
+	{
+		return s.drops.stream().filter(d -> d.item.equals(item) && Integer.valueOf(kill).equals(d.kc)).count();
+	}
+
+	@Test
+	public void importingAgainNeverChangesOrRemovesTheDropsThere()
+	{
+		// one orb from an earlier import (no kill number) and one seen in game at kill 225
+		ledger.setKc("the-leviathan", 231);
+		ledger.addOwned("the-leviathan", "Awakener's orb", 1);
+		ledger.logDrop("the-leviathan", "Awakener's orb", 225, 1, null, Drop.SRC_LIVE);
+		ledger.addOwned("the-leviathan", "Scarred tablet", 1);
+		HistoryInput same = new HistoryInput();
+		same.addKc("The Leviathan", 231, "Boss Kill Log");
+		same.addOwned(null, "The Leviathan", "Awakener's orb", 2, "Collection log");
+		same.addOwned(null, "The Leviathan", "Scarred tablet", 1, "Collection log");
+		assertTrue(planner.plan(same).isEmpty());
+		// the game shows fewer than the ledger has: nothing is taken away
+		HistoryInput fewer = new HistoryInput();
+		fewer.addOwned(null, "The Leviathan", "Awakener's orb", 1, "Collection log");
+		planner.apply(planner.plan(fewer));
+		BossState l = ledger.copyOf("the-leviathan");
+		assertEquals(2, l.copies("Awakener's orb"));
+		assertEquals(1, withKill(l, "Awakener's orb", 225));
+		// one more in the game's records: one more copy with no kill number, the others as they were
+		HistoryInput more = new HistoryInput();
+		more.addOwned(null, "The Leviathan", "Awakener's orb", 3, "Collection log");
+		assertEquals(1, planner.apply(planner.plan(more))[1]);
+		l = ledger.copyOf("the-leviathan");
+		assertEquals(3, l.copies("Awakener's orb"));
+		assertEquals(1, withKill(l, "Awakener's orb", 225));
+	}
+
+	@Test
+	public void anItemSeveralBossesDropIsCountedOnceForAllOfThem()
+	{
+		// the collection log keeps one count for the Awakener's orb, whichever Desert Treasure II boss it came from
+		ledger.setKc("the-leviathan", 231);
+		ledger.logDrop("the-leviathan", "Awakener's orb", 225, 1, null, Drop.SRC_LIVE);
+		ledger.addOwned("the-leviathan", "Awakener's orb", 1);
+		ledger.setKc("duke-sucellus", 100);
+		ledger.logDrop("duke-sucellus", "Awakener's orb", 50, 1, null, Drop.SRC_LIVE);
+		HistoryInput in = new HistoryInput();
+		in.addOwned(null, "The Leviathan", "Awakener's orb", 3, "Collection log");
+		Plan plan = planner.plan(in);
+		ItemRow r = itemRow(plan, "the-leviathan", "Awakener's orb");
+		assertTrue(r == null || r.add == 0);
+		assertTrue(plan.isEmpty());
+		// a fourth orb is one copy more, for the boss the page names
+		HistoryInput more = new HistoryInput();
+		more.addOwned(null, "The Leviathan", "Awakener's orb", 4, "Collection log");
+		Plan again = planner.plan(more);
+		assertEquals(1, itemRow(again, "the-leviathan", "Awakener's orb").add);
+		assertNull(itemRow(again, "duke-sucellus", "Awakener's orb"));
 	}
 
 	@Test

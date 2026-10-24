@@ -162,6 +162,27 @@ public class AnalyzerTest
 	}
 
 	@Test
+	public void theMokhaiotlWaystoneIsNoSpoon()
+	{
+		// a common drop of the standard table: far ahead of its rate is still no spoon
+		Ledger l = ledger();
+		l.setKc("doom-of-mokhaiotl", 20);
+		for (int k = 1; k <= 20; k++)
+		{
+			l.logDrop("doom-of-mokhaiotl", "Mokhaiotl waystone", k, 2, null, Drop.SRC_LIVE);
+		}
+		l.logDrop("doom-of-mokhaiotl", "Mokhaiotl cloth", 5, 1, null, Drop.SRC_LIVE);
+		Analyzer an = new Analyzer(l, null);
+		Views.OverviewView o = an.overview(() -> false);
+		assertNull(spoon(o, "Mokhaiotl waystone"));
+		assertNotNull(spoon(o, "Mokhaiotl cloth"));
+		// it is still tracked and judged on the boss page
+		Views.ItemView w = item(an.boss("doom-of-mokhaiotl", () -> false), "Mokhaiotl waystone");
+		assertNotNull(w);
+		assertEquals(20, w.a.O);
+	}
+
+	@Test
 	public void theBiggestSpoonsComeLuckiestFirst()
 	{
 		Ledger l = ledger();
@@ -403,21 +424,85 @@ public class AnalyzerTest
 	}
 
 	@Test
-	public void dataConfidenceFollowsTheNotes()
+	public void theBarrowsPiecesAreOneLineOfSpoons()
 	{
-		Views.Confidence c = Views.confidence(data.boss("zulrah"));
-		assertNotNull(c.level);
-		assertTrue(c.level.equals("high") || c.level.equals("medium") || c.level.equals("medium-low"));
-		int bad = 0;
-		for (Data.Boss b : data.bosses)
+		Ledger l = ledger();
+		l.setKc("barrows", 300);
+		List<String> pieces = new java.util.ArrayList<>();
+		for (String n : l.trackedNames("barrows"))
 		{
-			Views.Confidence x = Views.confidence(b);
-			if (!x.level.equals("high"))
+			if ("Barrows equipment".equals(data.boss("barrows").meta().get(n).group))
 			{
-				bad++;
-				assertTrue(!x.unknown.isEmpty() || !x.inferred.isEmpty() || !x.gaps.isEmpty());
+				pieces.add(n);
 			}
 		}
-		assertTrue(bad < data.bosses.size());
+		assertEquals(24, pieces.size());
+		// one each of 21 pieces: each is ahead of its own rate, but together they are about what 300 chests give (about 20.6)
+		for (int i = 0; i < 21; i++)
+		{
+			l.logDrop("barrows", pieces.get(i), 10 + i * 10, 1, null, Drop.SRC_LIVE);
+		}
+		Views.OverviewView o = new Analyzer(l, null).overview(() -> false);
+		for (Views.Rank r : o.spoons)
+		{
+			assertFalse(r.item, pieces.contains(r.item));
+		}
+		assertNull(spoon(o, "Barrows equipment"));
+		// ten more and the set as a whole is ahead: one line for all of it
+		for (int i = 0; i < 10; i++)
+		{
+			l.logDrop("barrows", pieces.get(i), 15 + i * 10, 1, null, Drop.SRC_LIVE);
+		}
+		o = new Analyzer(l, null).overview(() -> false);
+		Views.Rank set = spoon(o, "Barrows equipment");
+		assertNotNull(set);
+		assertEquals(31, set.got);
+		assertEquals(24, set.pieces);
+		assertEquals(300 * 7 / 102.0, set.expected, 0.6);
+		assertEquals(Luck.poissonPct(31, set.expected), set.pct, 1e-12);
+		assertEquals(pieces.get(0), set.icon);
+		for (Views.Rank r : o.spoons)
+		{
+			assertFalse(r.item, pieces.contains(r.item));
+		}
+		// the Barrows page still has every piece
+		assertEquals(l.trackedNames("barrows").size(), an(l).boss("barrows", () -> false).items.size());
+	}
+
+	@Test
+	public void eachMoonIsOneLineOfSpoons()
+	{
+		Ledger l = ledger();
+		l.setKc("moons-of-peril", 100);
+		l.logDrop("moons-of-peril", "Blue Moon spear", 5, 1, null, Drop.SRC_LIVE);
+		l.logDrop("moons-of-peril", "Blue Moon helm", 20, 1, null, Drop.SRC_LIVE);
+		l.logDrop("moons-of-peril", "Blue Moon chestplate", 40, 1, null, Drop.SRC_LIVE);
+		l.logDrop("moons-of-peril", "Blue Moon tassets", 60, 1, null, Drop.SRC_LIVE);
+		Views.OverviewView o = new Analyzer(l, null).overview(() -> false);
+		Views.Rank blue = spoon(o, "Blue Moon set");
+		assertNotNull(blue);
+		assertEquals(4, blue.got);
+		assertEquals(4, blue.pieces);
+		assertNull(spoon(o, "Blue Moon spear"));
+		assertNull(spoon(o, "Eclipse Moon set"));
+	}
+
+	private Analyzer an(Ledger l)
+	{
+		return new Analyzer(l, null);
+	}
+
+	@Test
+	public void onlyItemsWithoutARateAreListedAsUnknown()
+	{
+		// every boss in the data has its rates; an item marked unknown is listed (and left out of the luck figures)
+		for (Data.Boss b : data.bosses)
+		{
+			for (String n : Views.unknownRates(b))
+			{
+				assertTrue(b.id + " " + n, b.allRows().stream().anyMatch(r -> r.name.equals(n) && "unknown".equals(r.rate)));
+			}
+		}
+		assertTrue(Views.unknownRates(data.boss("zulrah")).isEmpty());
 	}
 }

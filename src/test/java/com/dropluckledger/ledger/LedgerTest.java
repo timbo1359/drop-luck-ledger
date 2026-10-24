@@ -47,6 +47,48 @@ public class LedgerTest
 	}
 
 	@Test
+	public void editingTheKillCountByHandForgetsTheGamesCountsSeenSoFar()
+	{
+		Ledger l = ledger();
+		l.update("zulrah", s ->
+		{
+			s.kc = 100;
+			s.labels().put("Zulrah", 100);
+			return null;
+		});
+		l.addKc("zulrah", 10);
+		assertTrue(l.copyOf("zulrah").labels().isEmpty());
+		l.update("zulrah", s ->
+		{
+			s.labels().put("Zulrah", 110);
+			return null;
+		});
+		l.setKc("zulrah", 120);
+		assertTrue(l.copyOf("zulrah").labels().isEmpty());
+	}
+
+	@Test
+	public void theGamesWholeCountSetsTheKillCountEitherWayButNotBelowADropsKill()
+	{
+		Ledger l = ledger();
+		Map<String, Integer> game = new LinkedHashMap<>();
+		game.put("Zulrah", 150);
+		l.setKc("zulrah", 100);
+		assertTrue(l.kcToGame("zulrah", game, 150));
+		assertEquals(150, l.kc("zulrah"));
+		assertEquals(Integer.valueOf(150), l.copyOf("zulrah").labels().get("Zulrah"));
+		assertFalse(l.kcToGame("zulrah", game, 150));
+		game.put("Zulrah", 5);
+		assertTrue(l.kcToGame("zulrah", game, 5));
+		assertEquals(5, l.kc("zulrah"));
+		l.logDrop("zulrah", "Magic fang", 40, 1, null, Drop.SRC_MANUAL);
+		game.put("Zulrah", 3);
+		l.kcToGame("zulrah", game, 3);
+		assertEquals(40, l.kc("zulrah"));
+		assertEquals(Integer.valueOf(3), l.copyOf("zulrah").labels().get("Zulrah"));
+	}
+
+	@Test
 	public void newKillsOnlyStartsAPeriodAtTheNextKill()
 	{
 		Ledger l = ledger();
@@ -122,6 +164,73 @@ public class LedgerTest
 	}
 
 	@Test
+	public void extraCopiesGoInTheOrderTheyAreLikeliestToBeWrong()
+	{
+		long[] now = {1000};
+		Ledger l = new Ledger(data, () -> now[0]);
+		String[] order = {"live 10", "live 20", "live 20 again", "live 30", "manual 25", "import"};
+		for (String what : order)
+		{
+			now[0] += 1000;
+			if (what.startsWith("import"))
+			{
+				l.addOwned("zulrah", "Tanzanite fang", 1);
+			}
+			else
+			{
+				int kc = Integer.parseInt(what.replaceAll("[^0-9]", ""));
+				l.logDrop("zulrah", "Tanzanite fang", kc, 1, null, what.startsWith("manual") ? Drop.SRC_MANUAL : Drop.SRC_LIVE);
+			}
+		}
+		l.logDrop("zulrah", "Magic fang", 20, 1, null, Drop.SRC_LIVE);
+		l.update("zulrah", s ->
+		{
+			s.provDrops = new ArrayList<>();
+			for (Drop d : s.drops)
+			{
+				s.provDrops.add(d.id);
+			}
+			return null;
+		});
+		// only the imported copy when asked for those alone
+		assertEquals(1, l.removeExtra("zulrah", "Tanzanite fang", 3, true));
+		assertEquals(5, l.copies("zulrah", "Tanzanite fang"));
+		// then the one typed in by hand, then one of the two at kill 20 (the later), then the newest
+		assertEquals(3, l.removeExtra("zulrah", "Tanzanite fang", 3, false));
+		BossState z = l.copyOf("zulrah");
+		List<Integer> left = new ArrayList<>();
+		for (Drop d : z.drops)
+		{
+			if (d.item.equals("Tanzanite fang"))
+			{
+				left.add(d.kc);
+				assertEquals(Drop.SRC_LIVE, d.src);
+			}
+		}
+		assertEquals(java.util.Arrays.asList(10, 20), left);
+		assertEquals(3000, find(z, "Tanzanite fang", 20).t);
+		// other items stay, and what went is no longer a provisional drop
+		assertEquals(1, z.copies("Magic fang"));
+		assertEquals(3, z.provDrops.size());
+		// never more than there are
+		assertEquals(2, l.removeExtra("zulrah", "Tanzanite fang", 5, false));
+		assertEquals(0, l.removeExtra("zulrah", "Tanzanite fang", 1, false));
+		assertEquals(0, l.removeExtra("zulrah", "Tanzanite fang", 0, false));
+	}
+
+	private static Drop find(BossState s, String item, int kc)
+	{
+		for (Drop d : s.drops)
+		{
+			if (d.item.equals(item) && d.kc != null && d.kc == kc)
+			{
+				return d;
+			}
+		}
+		throw new AssertionError("no " + item + " at " + kc);
+	}
+
+	@Test
 	public void changesTellTheListeners()
 	{
 		Ledger l = ledger();
@@ -163,14 +272,6 @@ public class LedgerTest
 			p.window = 30;
 			p.sel = "zulrah";
 		});
-		l.updateHistory(h ->
-		{
-			h.kc.put("Zulrah", 123);
-			Map<String, Integer> page = new LinkedHashMap<>();
-			page.put("Tanzanite fang", 2);
-			h.log.put("Zulrah", page);
-			h.kcTime = 99;
-		});
 		String json = LedgerCodec.toJson(gson, l);
 		Ledger back;
 		try
@@ -195,8 +296,16 @@ public class LedgerTest
 		assertEquals(1, back.prefs().rowi);
 		assertEquals(30, back.prefs().window);
 		assertEquals("zulrah", back.prefs().sel);
-		assertEquals(Integer.valueOf(2), back.history().log.get("Zulrah").get("Tanzanite fang"));
-		assertEquals(99L, back.history().kcTime);
+	}
+
+	@Test
+	public void theGameHistoryAnEarlierVersionKeptIsLetGo() throws Exception
+	{
+		String json = "{\"app\":\"drop-luck-ledger\",\"v\":1,\"prefs\":{},\"bosses\":{\"zulrah\":{\"kc\":5}},"
+			+ "\"history\":{\"kc\":{\"Zulrah\":700},\"log\":{\"Zulrah\":{\"Tanzanite fang\":1}},\"kcTime\":1,\"logTime\":2}}";
+		Ledger l = LedgerCodec.fromJson(data, json);
+		assertEquals(5, l.kc("zulrah"));
+		assertFalse(LedgerCodec.toJson(gson, l).contains("history"));
 	}
 
 	@Test
@@ -239,7 +348,7 @@ public class LedgerTest
 		assertEquals(1, c.segs.get(1).params.get("mvp"));
 		assertEquals(4, c.segs.get(1).params.get("team"));
 		assertFalse(c.segs.get(1).params.containsKey("bogus"));
-		assertFalse(l.hasBoss("not-a-boss"));
+		assertFalse(l.activeBosses().contains("not-a-boss"));
 		BossState v = l.copyOf("vorkath");
 		assertEquals(12, v.kc);
 		assertEquals(1, v.drops.size()); // the entry without a name is dropped
@@ -252,28 +361,42 @@ public class LedgerTest
 	@Test
 	public void bossesThePluginLeavesOutAreKeptInTheFile() throws Exception
 	{
-		String cox = "{\"kc\":70,\"segs\":[{\"from\":1,\"params\":{\"cm\":1}}],"
-			+ "\"drops\":[{\"id\":\"t1\",\"item\":\"Twisted bow\",\"kc\":64,\"qty\":1,\"t\":5}],\"track\":[],\"hide\":[]}";
-		String json = "{\"app\":\"drop-luck-ledger\",\"v\":1,\"prefs\":{},\"bosses\":{\"chambers-of-xeric\":" + cox + ",\"zulrah\":{\"kc\":5}}}";
+		String titans = "{\"kc\":70,\"segs\":[{\"from\":1,\"params\":{}}],"
+			+ "\"drops\":[{\"id\":\"t1\",\"item\":\"Giantsoul amulet\",\"kc\":64,\"qty\":1,\"t\":5}],\"track\":[],\"hide\":[]}";
+		String json = "{\"app\":\"drop-luck-ledger\",\"v\":1,\"prefs\":{},\"bosses\":{\"royal-titans\":" + titans + ",\"zulrah\":{\"kc\":5}}}";
 		Ledger l = LedgerCodec.fromJson(data, json);
-		assertFalse(l.hasBoss("chambers-of-xeric"));
 		assertEquals(java.util.Collections.singletonList("zulrah"), l.activeBosses());
 		// written back as it was, so the web app still has it
 		com.google.gson.JsonObject saved = new com.google.gson.JsonParser().parse(LedgerCodec.toJson(gson, l)).getAsJsonObject().getAsJsonObject("bosses");
-		assertEquals(new com.google.gson.JsonParser().parse(cox), saved.get("chambers-of-xeric"));
+		assertEquals(new com.google.gson.JsonParser().parse(titans), saved.get("royal-titans"));
 		assertTrue(saved.has("zulrah"));
 		// a restore keeps it, a merge brings it over when it is missing
 		Ledger restored = ledger();
 		restored.replaceWith(l);
-		assertTrue(LedgerCodec.toJson(gson, restored).contains("Twisted bow"));
+		assertTrue(LedgerCodec.toJson(gson, restored).contains("Giantsoul amulet"));
 		Ledger merged = ledger();
 		merged.setKc("vorkath", 3);
 		merged.mergeFrom(l);
-		assertTrue(LedgerCodec.toJson(gson, merged).contains("Twisted bow"));
+		assertTrue(LedgerCodec.toJson(gson, merged).contains("Giantsoul amulet"));
 		assertEquals(3, merged.kc("vorkath"));
 		// erasing everything (a fresh ledger) lets it go
 		restored.replaceWith(ledger());
-		assertFalse(LedgerCodec.toJson(gson, restored).contains("chambers-of-xeric"));
+		assertFalse(LedgerCodec.toJson(gson, restored).contains("royal-titans"));
+	}
+
+	@Test
+	public void raidsKeptByTheVersionThatLeftThemOutAreBack() throws Exception
+	{
+		// the version without raids wrote them back untouched; this one reads them as bosses again
+		String cox = "{\"kc\":70,\"segs\":[{\"from\":1,\"params\":{\"cm\":1}}],"
+			+ "\"drops\":[{\"id\":\"t1\",\"item\":\"Twisted bow\",\"kc\":64,\"qty\":1,\"t\":5}],\"track\":[],\"hide\":[]}";
+		String json = "{\"app\":\"drop-luck-ledger\",\"v\":1,\"prefs\":{},\"bosses\":{\"chambers-of-xeric\":" + cox + "}}";
+		Ledger l = LedgerCodec.fromJson(data, json);
+		assertTrue(l.activeBosses().contains("chambers-of-xeric"));
+		BossState c = l.copyOf("chambers-of-xeric");
+		assertEquals(70, c.kc);
+		assertEquals(Integer.valueOf(64), c.drops.get(0).kc);
+		assertEquals(1, ((Number) c.paramsAt(10).get("cm")).intValue());
 	}
 
 	@Test

@@ -1,7 +1,9 @@
 package com.dropluckledger.history;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import com.dropluckledger.TestData;
 import com.dropluckledger.engine.Data;
@@ -51,5 +53,18 @@ public class QuantitiesTest
 		assertEquals(0, Quantities.drops(data.boss("zulrah"), "Tanzanite fang", -3));
 		// an item the boss does not list has no amount at all
 		assertEquals(1, Quantities.perDrop(data.boss("zulrah"), "No such item"), 0);
+	}
+
+	@Test
+	public void anItemDropsOneAtATimeOnlyWhenEveryRowGivesOne()
+	{
+		assertTrue(Quantities.oneAtATime(data.boss("zulrah"), "Tanzanite fang"));
+		assertTrue(Quantities.oneAtATime(data.boss("general-graardor"), "Godsword shard 1")); // on two tables, one each
+		assertTrue(Quantities.oneAtATime(data.boss("zulrah"), "Pet Snakeling")); // a pet's row has no amount
+		assertFalse(Quantities.oneAtATime(data.boss("alchemical-hydra"), "Dragon knife")); // 500-1000
+		assertFalse(Quantities.oneAtATime(data.boss("doom-of-mokhaiotl"), "Mokhaiotl waystone")); // 1-2
+		assertFalse(Quantities.oneAtATime(data.boss("araxxor"), "Araxyte venom sac")); // 1, 6 or 12
+		assertFalse(Quantities.oneAtATime(data.boss("the-fractured-archive"), "Ascension shards")); // "1+": an unknown amount
+		assertFalse(Quantities.oneAtATime(data.boss("zulrah"), "No such item"));
 	}
 }

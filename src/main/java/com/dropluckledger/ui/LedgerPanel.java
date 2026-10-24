@@ -51,6 +51,24 @@ public final class LedgerPanel extends PluginPanel
 		 */
 		void planHistory(Consumer<HistoryPlanner.Plan> then);
 
+		/**
+		 * Makes the ticked changes of a list from the game's own records (Collection Log pages, the Boss Kill Log) that the player
+		 * agreed to.
+		 *
+		 * @return {kill counts changed, copies added, copies taken away, ticked lines left out because their boss changed since}
+		 */
+		default int[] applySync(HistoryPlanner.Plan plan)
+		{
+			return new int[4];
+		}
+
+		/**
+		 * The player dismissed the list from the game's own records: what was read is forgotten.
+		 */
+		default void dismissSync()
+		{
+		}
+
 		void exportBackup(Component parent);
 
 		/**
@@ -59,6 +77,20 @@ public final class LedgerPanel extends PluginPanel
 		void importBackup(Component parent, Consumer<Ledger> confirm);
 
 		void replaceLedger(Ledger backup);
+
+		/**
+		 * The player started to track an item: its earlier copies are brought in from the drop log.
+		 */
+		default void backfill(String bossId, String item)
+		{
+		}
+
+		/**
+		 * The ledger was erased: the drop log goes too.
+		 */
+		default void eraseDropLog()
+		{
+		}
 	}
 
 	private static final int NOTE_MS = 8000;
@@ -101,6 +133,10 @@ public final class LedgerPanel extends PluginPanel
 	private boolean lastPictures = true;
 	private Notice stateNote;
 	private HistoryPlanner.Plan offered;
+	/**
+	 * The list from the game's own records the "sync" note offers, or null.
+	 */
+	private HistoryPlanner.Plan syncPlan;
 
 	public LedgerPanel(Host host, ExecutorService analysis)
 	{
@@ -242,6 +278,13 @@ public final class LedgerPanel extends PluginPanel
 				String text = s == TrackingState.TRACKING ? TrackingState.LOADING.message() : s.message();
 				stateNote = notice(null, text, Look.MUTED, 0, false);
 				offered = null;
+				// a list read for this account is not offered to the next one
+				Notice sync = keyed.get("sync");
+				if (sync != null)
+				{
+					sync.dismiss();
+				}
+				syncPlan = null;
 			}
 			updateHeader();
 		});
@@ -279,7 +322,7 @@ public final class LedgerPanel extends PluginPanel
 	}
 
 	/**
-	 * The plugin read a page of the game's own records (kill log, collection log).
+	 * The plugin read a page of the game's own records (kill log, collection log) and the ledger already matches it.
 	 */
 	public void historyRead(String text)
 	{
@@ -289,10 +332,89 @@ public final class LedgerPanel extends PluginPanel
 			{
 				return;
 			}
-			Notice n = notice("read", text, Look.BLUE, 0, true);
-			n.buttons.removeAll();
-			n.button("Add to my ledger…", this::reviewHistoryNow);
+			notice("read", text, Look.BLUE, NOTE_MS, true);
 		});
+	}
+
+	/**
+	 * The game's own records read so far differ from the ledger: say how, and let the player add the changes, look at them first, or
+	 * dismiss them.  Nothing changes until the player agrees.  A newer list replaces the note.
+	 */
+	public void syncReady(HistoryPlanner.Plan plan, String text)
+	{
+		onEdt(() ->
+		{
+			if (ledger == null)
+			{
+				return;
+			}
+			Notice read = keyed.get("read");
+			if (read != null)
+			{
+				read.dismiss();
+			}
+			Notice n = notice("sync", text, Look.ACCENT, 0, true);
+			syncPlan = plan;
+			n.closed = () ->
+			{
+				syncPlan = null;
+				host.dismissSync();
+			};
+			if (plan.kcToApply() + plan.itemRowsToApply() > 0)
+			{
+				n.button("Add", () ->
+				{
+					n.dismiss();
+					applySync(plan);
+				});
+			}
+			n.button("Review…", () -> reviewSync(n, plan));
+		});
+	}
+
+	private void reviewSync(Notice n, HistoryPlanner.Plan plan)
+	{
+		HistoryForm form = new HistoryForm(plan);
+		if (dialogs.form(window(), "Check against the game", form, "Apply"))
+		{
+			// a list made while the form was open holds this one's reads too: adding this one leaves the rest for a new note
+			n.dismiss();
+			applySync(plan);
+		}
+	}
+
+	private void applySync(HistoryPlanner.Plan plan)
+	{
+		if (syncPlan == plan)
+		{
+			syncPlan = null;
+		}
+		int[] done = host.applySync(plan);
+		List<String> parts = new ArrayList<>();
+		if (done[0] > 0)
+		{
+			parts.add(done[0] + " kill count" + (done[0] == 1 ? "" : "s") + " set");
+		}
+		if (done[1] > 0)
+		{
+			parts.add(done[1] + " item" + (done[1] == 1 ? "" : "s") + " added");
+		}
+		if (done[2] > 0)
+		{
+			parts.add(done[2] + " item" + (done[2] == 1 ? "" : "s") + " taken away");
+		}
+		int left = done.length > 3 ? done[3] : 0;
+		String text;
+		if (parts.isEmpty())
+		{
+			text = left == 0 ? "Nothing needed changing." : "Nothing was changed: the boss changed after the list was made. Open its page again to check it.";
+		}
+		else
+		{
+			text = "From the game's records: " + String.join(", ", parts) + "."
+				+ (left == 0 ? "" : " " + left + (left == 1 ? " line was" : " lines were") + " left out, as the boss changed after the list was made; open its page again to check it.");
+		}
+		notice(null, text, Look.GOOD, NOTE_MS, true);
 	}
 
 	/**
@@ -301,6 +423,22 @@ public final class LedgerPanel extends PluginPanel
 	public HistoryPlanner.Plan offeredPlan()
 	{
 		return offered;
+	}
+
+	/**
+	 * The list from the game's own records the panel is offering at the moment, or null.
+	 */
+	public HistoryPlanner.Plan syncPlan()
+	{
+		return keyed.containsKey("sync") ? syncPlan : null;
+	}
+
+	/**
+	 * Shows a short note that something was done (it goes away by itself).
+	 */
+	public void showDone(String text)
+	{
+		onEdt(() -> notice(null, text, Look.GOOD, NOTE_MS, true));
 	}
 
 	/**
@@ -543,13 +681,13 @@ public final class LedgerPanel extends PluginPanel
 		}
 		if (plan.sources.isEmpty() && plan.kc.isEmpty() && plan.items.isEmpty())
 		{
-			dialogs.note(window(), "Game history", "Nothing was found yet.\n\nThe plugin reads your kill counts from RuneLite's saved data, and your Boss Kill Log and "
-				+ "Collection Log pages as you open them in game. Open your Adventure Log (Boss Kill Log) and a few Collection Log pages, then try again.");
+			dialogs.note(window(), "Game history", "RuneLite has saved nothing to bring in for this character.\n\nOpen your Boss Kill Log (in the Adventure Log) "
+				+ "and your Collection Log pages in game: the panel offers what they show.");
 			return;
 		}
 		if (plan.isEmpty())
 		{
-			dialogs.note(window(), "Game history", "Your ledger already has everything the game's records show.");
+			dialogs.note(window(), "Game history", "Your ledger already has everything RuneLite saved.");
 			return;
 		}
 		HistoryForm form = new HistoryForm(plan);
@@ -599,7 +737,17 @@ public final class LedgerPanel extends PluginPanel
 		notices.add(n.panel, 0);
 		while (shown.size() > 4)
 		{
-			shown.get(0).dismiss();
+			// the oldest note goes, but not one the player still has to answer (what the game's records would change, history on offer)
+			Notice oldest = shown.get(0);
+			for (Notice x : shown)
+			{
+				if (!"sync".equals(x.key) && !"offer".equals(x.key))
+				{
+					oldest = x;
+					break;
+				}
+			}
+			oldest.dismiss();
 		}
 		notices.revalidate();
 		notices.repaint();
@@ -615,6 +763,14 @@ public final class LedgerPanel extends PluginPanel
 		final String text;
 		final JPanel panel = new JPanel(new BorderLayout(4, 2));
 		final JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+		/**
+		 * Run when the player closes the note with its cross (not when a newer note replaces it).
+		 */
+		Runnable closed;
+		/**
+		 * The cross, or null for a note that cannot be closed.
+		 */
+		JButton cross;
 		private Timer timer;
 
 		Notice(String key, String text, Color accent, int autoMs, boolean closable)
@@ -633,7 +789,15 @@ public final class LedgerPanel extends PluginPanel
 				x.setFocusPainted(false);
 				x.setMargin(new java.awt.Insets(0, 0, 0, 0));
 				x.setToolTipText("Dismiss");
-				x.addActionListener(e -> dismiss());
+				cross = x;
+				x.addActionListener(e ->
+				{
+					dismiss();
+					if (closed != null)
+					{
+						closed.run();
+					}
+				});
 				JPanel nx = new JPanel(new BorderLayout());
 				nx.setOpaque(false);
 				nx.add(x, BorderLayout.NORTH);
@@ -870,6 +1034,15 @@ public final class LedgerPanel extends PluginPanel
 			}
 		}
 		return out;
+	}
+
+	/**
+	 * The cross of the note with the given key, or null.
+	 */
+	JButton noteCross(String key)
+	{
+		Notice n = keyed.get(key);
+		return n == null ? null : n.cross;
 	}
 
 	/**

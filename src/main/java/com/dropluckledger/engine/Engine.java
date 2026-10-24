@@ -117,6 +117,7 @@ public final class Engine
 		env.put("lq", 1);
 		env.put("kc", kc);
 		env.put("owned", 0);
+		env.put("setowned", 0);
 		env.put("ri", 0);
 		if (globals != null)
 		{
@@ -155,7 +156,8 @@ public final class Engine
 
 	// ------------------------------------------------------------------ row probabilities
 	/**
-	 * Absolute probability per attempt of a row; null for "rest" rows (whatever is left over) and unknown rates.
+	 * Absolute probability per attempt of a row; null for "rest" rows (whatever is left over).  A rate that is not published yet
+	 * ("unknown") is 0: the row is shown and tracked, but never rolled.
 	 */
 	public static Double rowBase(Row row, Env env, Ctx ctx)
 	{
@@ -163,11 +165,17 @@ public final class Engine
 		{
 			return 0.0;
 		}
+		if (row.unknownRate())
+		{
+			return 0.0;
+		}
 		if (row.expr != null)
 		{
 			env.put("owned", ctx != null ? ctx.owned(row) : 0);
+			env.put("setowned", setOwned(row, ctx));
 			double v = row.expr.eval(env);
 			env.put("owned", 0);
+			env.put("setowned", 0);
 			return Math.max(0, v);
 		}
 		if (row.var != null)
@@ -207,6 +215,37 @@ public final class Engine
 			return null;
 		}
 		return row.p;
+	}
+
+	/**
+	 * The fewest copies held of any item of the row's no-duplicate group: 0 until the whole set has been received once.  For a row in no
+	 * group, its own copies.
+	 */
+	private static int setOwned(Row row, Ctx ctx)
+	{
+		if (ctx == null)
+		{
+			return 0;
+		}
+		if (row.group == null)
+		{
+			return ctx.owned(row);
+		}
+		int mn = Integer.MAX_VALUE;
+		for (Row r : row.group)
+		{
+			mn = Math.min(mn, ctx.owned(r));
+		}
+		return mn == Integer.MAX_VALUE ? 0 : mn;
+	}
+
+	/**
+	 * True for a no-duplicate group written {@code nodup=group:once}: its protection holds only until every item of it has been
+	 * received once (the Tombs of Amascut jewels).
+	 */
+	public static boolean onceGroup(String group)
+	{
+		return group != null && group.endsWith(":once");
 	}
 
 	/**
@@ -454,8 +493,9 @@ public final class Engine
 				groups.computeIfAbsent(e.nodup, k -> new ArrayList<>()).add(e);
 			}
 		}
-		for (List<Entry> es : groups.values())
+		for (Map.Entry<String, List<Entry>> ge : groups.entrySet())
 		{
+			List<Entry> es = ge.getValue();
 			int[] counts = new int[es.size()];
 			int mn = Integer.MAX_VALUE;
 			double tot = 0;
@@ -464,6 +504,10 @@ public final class Engine
 				counts[i] = cnt(ctx, rows.get(es.get(i).row));
 				mn = Math.min(mn, counts[i]);
 				tot += es.get(i).p;
+			}
+			if (onceGroup(ge.getKey()) && mn >= 1)
+			{
+				continue; // the whole set is owned: duplicates can come again
 			}
 			double se = 0;
 			for (int i = 0; i < es.size(); i++)
@@ -695,7 +739,25 @@ public final class Engine
 		Boss boss;
 	}
 
-	private static Chain buildChain(Boss boss, Env env, Ctx ctx)
+	/**
+	 * True when one of the boss's tables is rolled whoever got the kill's own loot (noscale=1, the God Wars bodyguards).
+	 */
+	static boolean hasNoscale(Boss boss)
+	{
+		for (Table t : boss.tables)
+		{
+			if (t.noscale)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * @param onlyNoscale the plan of a kill whose own loot went to another player: only the noscale tables are rolled for the player
+	 */
+	private static Chain buildChain(Boss boss, Env env, Ctx ctx, boolean onlyNoscale)
 	{
 		List<ChainTable> chain = new ArrayList<>();
 		for (Table t : boss.tables)
@@ -706,6 +768,10 @@ public final class Engine
 				continue;
 			}
 			if (t.ifFn != null && !Expr.truthy(t.ifFn.eval(env)))
+			{
+				continue;
+			}
+			if (onlyNoscale && !t.noscale)
 			{
 				continue;
 			}
@@ -753,7 +819,7 @@ public final class Engine
 		return new double[][] {{lo, 1}};
 	}
 
-	static Plan plan(Boss boss, Env env, Ctx ctx)
+	static Plan plan(Boss boss, Env env, Ctx ctx, boolean onlyNoscale)
 	{
 		Plan pl = new Plan();
 		pl.boss = boss;
@@ -771,12 +837,12 @@ public final class Engine
 			{
 				env.put(boss.rv.name, boss.rv.start + r);
 				env.put("ri", r + 1);
-				pl.chains.add(buildChain(boss, env, ctx));
+				pl.chains.add(buildChain(boss, env, ctx, onlyNoscale));
 			}
 			return pl;
 		}
 		pl.indexMode = false;
-		pl.chain = buildChain(boss, env, ctx);
+		pl.chain = buildChain(boss, env, ctx, onlyNoscale);
 		return pl;
 	}
 
@@ -904,9 +970,12 @@ public final class Engine
 			}
 			double s = 0;
 			double keep = Math.max(0, 1 - q);
+			// distinct=1: the rolls never give the same row twice, so mm rolls give a row with chance mm x its share (exact for one
+			// row of a table whose rows weigh the same)
+			boolean distinct = chain.base.t.distinct;
 			for (int mm = 0; mm <= m0; mm++)
 			{
-				s += vec[mm] * Math.pow(keep, mm);
+				s += vec[mm] * (distinct ? Math.max(0, 1 - mm * q) : Math.pow(keep, mm));
 			}
 			return s;
 		}
@@ -1034,22 +1103,29 @@ public final class Engine
 	 */
 	public static Map<String, ItemProb> itemProbs(Boss boss, Env env, Ctx ctx, Set<String> onlyNames)
 	{
-		Map<String, ItemProb> out = itemProbsRaw(boss, env, ctx, onlyNames);
+		Map<String, ItemProb> out = itemProbsRaw(boss, env, ctx, onlyNames, false);
 		double s = lootScale(boss, env);
 		if (s < 1)
 		{
-			for (ItemProb o : out.values())
+			// a kill that pays the player (share s) rolls everything; one that paid another player still rolls the noscale tables
+			Map<String, ItemProb> ns = hasNoscale(boss) ? itemProbsRaw(boss, env, ctx, onlyNames, true) : java.util.Collections.<String, ItemProb>emptyMap();
+			for (Map.Entry<String, ItemProb> e : out.entrySet())
 			{
-				o.p *= s;
+				ItemProb o = e.getValue();
+				ItemProb n = ns.get(e.getKey());
+				o.p = s * o.p + (1 - s) * (n != null ? n.p : 0);
 			}
 		}
 		return out;
 	}
 
-	private static Map<String, ItemProb> itemProbsRaw(Boss boss, Env env, Ctx ctx, Set<String> onlyNames)
+	/**
+	 * @param onlyNoscale only the noscale tables (no follow tables, tertiaries or pets: they belong to the kill's own loot)
+	 */
+	private static Map<String, ItemProb> itemProbsRaw(Boss boss, Env env, Ctx ctx, Set<String> onlyNames, boolean onlyNoscale)
 	{
 		Map<String, ItemProb> out = new LinkedHashMap<>();
-		Plan pl = plan(boss, env, ctx);
+		Plan pl = plan(boss, env, ctx, onlyNoscale);
 		for (String n : planNames(pl))
 		{
 			if (onlyNames != null && !onlyNames.contains(n))
@@ -1080,6 +1156,10 @@ public final class Engine
 				}
 			}
 		}
+		if (onlyNoscale)
+		{
+			return out;
+		}
 		// follow tables (e.g. Abyssal Sire: items rolled when the Unsired is offered)
 		for (Table t : boss.tables)
 		{
@@ -1089,6 +1169,7 @@ public final class Engine
 				continue;
 			}
 			double pSrc = out.containsKey(src) ? out.get(src).p : 0;
+			double fPet = petSlotFactor(boss, t, ctx);
 			List<Row> rows = new ArrayList<>();
 			for (Row r : t.items)
 			{
@@ -1107,8 +1188,9 @@ public final class Engine
 				}
 			}
 			IdentityHashMap<Row, Double> adj = new IdentityHashMap<>();
-			for (List<Row> rs : groups.values())
+			for (Map.Entry<String, List<Row>> ge : groups.entrySet())
 			{
+				List<Row> rs = ge.getValue();
 				int[] cs = new int[rs.size()];
 				int mn = Integer.MAX_VALUE;
 				double tot = 0;
@@ -1117,6 +1199,10 @@ public final class Engine
 					cs[i] = cnt(ctx, rs.get(i));
 					mn = Math.min(mn, cs[i]);
 					tot += nz(rs.get(i).p);
+				}
+				if (onceGroup(ge.getKey()) && mn >= 1)
+				{
+					continue;
 				}
 				double se = 0;
 				for (int i = 0; i < rs.size(); i++)
@@ -1140,7 +1226,7 @@ public final class Engine
 				Double sh = adj.containsKey(r) ? adj.get(r) : rowBase(r, env, ctx);
 				if (truthy(sh))
 				{
-					put(out, r.name, pSrc * sh, "follow", r);
+					put(out, r.name, pSrc * sh * fPet, "follow", r);
 				}
 			}
 		}
@@ -1213,12 +1299,23 @@ public final class Engine
 	 */
 	public static double anyProb(Boss boss, Env env, Ctx ctx, Set<String> targets, Collection<String> sources)
 	{
+		double s = lootScale(boss, env);
+		double paid = anyProbRaw(boss, env, ctx, targets, sources, false);
+		if (s >= 1)
+		{
+			return paid;
+		}
+		return s * paid + (hasNoscale(boss) ? (1 - s) * anyProbRaw(boss, env, ctx, targets, sources, true) : 0);
+	}
+
+	private static double anyProbRaw(Boss boss, Env env, Ctx ctx, Set<String> targets, Collection<String> sources, boolean onlyNoscale)
+	{
 		Set<String> need = new LinkedHashSet<>(targets);
 		if (sources != null)
 		{
 			need.addAll(sources);
 		}
-		Map<String, ItemProb> all = itemProbsRaw(boss, env, ctx, need);
+		Map<String, ItemProb> all = itemProbsRaw(boss, env, ctx, need, onlyNoscale);
 		Set<String> tbl = new LinkedHashSet<>();
 		double q = 1;
 		Map<String, List<String>> src = new HashMap<>();
@@ -1269,9 +1366,29 @@ public final class Engine
 		}
 		if (!tbl.isEmpty())
 		{
-			q *= survPlan(plan(boss, env, ctx), env, tbl);
+			q *= survPlan(plan(boss, env, ctx, onlyNoscale), env, tbl);
 		}
-		return lootScale(boss, env) * (1 - q);
+		return 1 - q;
+	}
+
+	/**
+	 * For a follow table with petslot=a/b: 1 / (1 - a/b) once the boss's pet is owned (its slot is gone and the other rows share it
+	 * out), 1 before.
+	 */
+	private static double petSlotFactor(Boss boss, Table t, Ctx ctx)
+	{
+		if (!(t.petslot > 0 && t.petslot < 1))
+		{
+			return 1;
+		}
+		for (Row r : boss.pets)
+		{
+			if (cnt(ctx, r) > 0)
+			{
+				return 1 / (1 - t.petslot);
+			}
+		}
+		return 1;
 	}
 
 	// ------------------------------------------------------------------ item catalogue (static metadata)
@@ -1291,6 +1408,12 @@ public final class Engine
 		 * The duplicate-protection group the item is in (only the pieces held the fewest of can drop), or null.
 		 */
 		public String nodup;
+		/**
+		 * A common drop that the overview's Biggest Spoons leaves out (the Mokhaiotl waystone): being ahead of its rate is no spoon.
+		 */
+		public boolean noSpoon;
+		private boolean knownRate;
+		private boolean unknownRate;
 
 		ItemMeta(String name)
 		{
@@ -1305,6 +1428,26 @@ public final class Engine
 		public boolean isPet()
 		{
 			return flags.contains("P");
+		}
+
+		/**
+		 * True when no drop rate of the item is published yet: it is recorded, but no chance or luck is worked out for it.
+		 */
+		public boolean rateUnknown()
+		{
+			return unknownRate && !knownRate;
+		}
+
+		void rate(Row r)
+		{
+			if (r.unknownRate())
+			{
+				unknownRate = true;
+			}
+			else
+			{
+				knownRate = true;
+			}
 		}
 	}
 
@@ -1363,6 +1506,7 @@ public final class Engine
 				m.flags.add("P");
 			}
 			m.where.add("pet");
+			m.rate(r);
 			if (r.flagged("note"))
 			{
 				m.note = r.attr("note");
@@ -1378,6 +1522,7 @@ public final class Engine
 		{
 			m.flags.add(r.flag);
 		}
+		m.rate(r);
 		if (r.flagged("pool"))
 		{
 			m.pool = r.attr("pool");
@@ -1397,6 +1542,10 @@ public final class Engine
 		if (r.flagged("nodup"))
 		{
 			m.nodup = r.attr("nodup");
+		}
+		if (r.flagged("nospoon"))
+		{
+			m.noSpoon = true;
 		}
 		if (r.seq != null)
 		{

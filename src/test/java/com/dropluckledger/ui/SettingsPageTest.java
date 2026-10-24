@@ -194,9 +194,11 @@ public class SettingsPageTest
 		fx.dialogs.confirmAnswer = false;
 		Swings.edt(erase::doClick);
 		assertTrue(fx.host.replaced.isEmpty());
+		assertEquals(0, fx.host.dropLogsErased);
 		fx.dialogs.confirmAnswer = true;
 		Swings.edt(erase::doClick);
 		assertEquals(1, fx.host.replaced.size());
+		assertEquals(1, fx.host.dropLogsErased);
 		Ledger fresh = fx.host.replaced.get(0);
 		assertEquals(0, fresh.kc("zulrah"));
 		assertTrue(fresh.activeBosses().isEmpty());
@@ -226,7 +228,7 @@ public class SettingsPageTest
 		Swings.edt(sp.showNoneButton()::doClick);
 		fx.settle();
 		assertFalse(fx.ledger.shown("zulrah"));
-		assertEquals("Showing 0 of 64 bosses", sp.shownText());
+		assertEquals("Showing 0 of 68 bosses", sp.shownText());
 		assertFalse(sp.bossBox("duke-sucellus").isSelected());
 		assertFalse(sp.showNoneButton().isEnabled());
 		assertEquals("Desert Treasure II (0/4)", title(dt2));
@@ -238,7 +240,7 @@ public class SettingsPageTest
 			assertTrue(id, sp.bossBox(id).isSelected());
 		}
 		assertFalse(fx.ledger.shown("zulrah"));
-		assertEquals("Showing 4 of 64 bosses", sp.shownText());
+		assertEquals("Showing 4 of 68 bosses", sp.shownText());
 		assertEquals("Desert Treasure II (4/4)", title(dt2));
 		// one at a time
 		Swings.edt(sp.bossBox("the-whisperer")::doClick);
@@ -250,7 +252,7 @@ public class SettingsPageTest
 		Swings.edt(fx.panel.backButton()::doClick);
 		fx.settle();
 		String t = fx.pageText();
-		assertTrue(t, t.contains("1 boss tracked \u00b7 3 of 64 shown"));
+		assertTrue(t, t.contains("1 boss tracked \u00b7 3 of 68 shown"));
 		assertTrue(t, t.contains("Duke Sucellus"));
 		assertFalse(t, t.contains("Zulrah"));
 		assertFalse(t, t.contains("The Whisperer"));

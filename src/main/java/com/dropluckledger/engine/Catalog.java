@@ -20,7 +20,7 @@ public final class Catalog
 	{
 	}
 
-	public static final List<String> CAT_ORDER = Arrays.asList("Raid-style boss", "Desert Treasure II", "God Wars Dungeon", "Varlamore",
+	public static final List<String> CAT_ORDER = Arrays.asList("Raid", "Raid-style boss", "Desert Treasure II", "God Wars Dungeon", "Varlamore",
 		"Slayer", "Dragons", "Wilderness", "Dagannoth Kings", "Minigame", "Minigame boss", "Skilling boss", "Standalone", "Misc",
 		"Minor boss", "Clue boss");
 
@@ -90,8 +90,8 @@ public final class Catalog
 	}
 
 	/**
-	 * The "any unique" selection: the tracked uniques that are in the collection log, split into those that share the unique table
-	 * and those rolled separately (noany).
+	 * The "any unique" selection: the tracked uniques that are in the collection log and have a drop rate, split into those that share
+	 * the unique table and those rolled separately (noany).
 	 */
 	public static final class AnyNames
 	{
@@ -107,7 +107,7 @@ public final class Catalog
 		for (String n : tracked)
 		{
 			ItemMeta im = m.get(n);
-			if (im == null || !im.isUnique() || im.hidden || !log.contains(n))
+			if (im == null || !im.isUnique() || im.hidden || !log.contains(n) || im.rateUnknown())
 			{
 				continue;
 			}

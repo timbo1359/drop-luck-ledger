@@ -48,7 +48,6 @@ public final class Ledger
 	private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
 	private final Random rnd = new Random();
 	private Prefs prefs = new Prefs();
-	private HistoryStage history = new HistoryStage();
 	private long revision;
 
 	public Ledger(Data data)
@@ -124,11 +123,6 @@ public final class Ledger
 
 	// ------------------------------------------------------------------ reading
 
-	public synchronized boolean hasBoss(String id)
-	{
-		return bosses.containsKey(id);
-	}
-
 	public synchronized boolean hasData(String id)
 	{
 		BossState b = bosses.get(id);
@@ -167,6 +161,15 @@ public final class Ledger
 	}
 
 	/**
+	 * How many copies of an item the boss has in the ledger.
+	 */
+	public synchronized int copies(String id, String item)
+	{
+		BossState b = bosses.get(id);
+		return b == null ? 0 : b.copies(item);
+	}
+
+	/**
 	 * The state in the form the luck maths takes.
 	 */
 	public synchronized Luck.BossRecord record(String id)
@@ -200,27 +203,6 @@ public final class Ledger
 	public synchronized Prefs prefs()
 	{
 		return prefs.copy();
-	}
-
-	/**
-	 * A copy of what has been read from the game's own records so far.
-	 */
-	public synchronized HistoryStage history()
-	{
-		return history.copy();
-	}
-
-	/**
-	 * Changes the staged history (the ledger itself is not touched).
-	 */
-	public void updateHistory(java.util.function.Consumer<HistoryStage> fn)
-	{
-		synchronized (this)
-		{
-			fn.accept(history);
-			touch(null);
-		}
-		fire(null);
 	}
 
 	/**
@@ -298,6 +280,10 @@ public final class Ledger
 
 	// ------------------------------------------------------------------ changes made by the player or by history
 
+	/**
+	 * The player sets the kill count by hand.  The game's counts seen so far are forgotten, so the next one the game shows (a kill-count
+	 * message, a Collection Log page) is taken as it is rather than added on top of the player's number.
+	 */
 	public void setKc(String id, int kc)
 	{
 		update(id, s ->
@@ -305,16 +291,45 @@ public final class Ledger
 			s.kc = Math.max(s.maxDropKc(), Math.max(0, kc));
 			s.prov = null;
 			s.provDrops = null;
+			s.labelKc = null;
 			return null;
 		});
 	}
 
+	/**
+	 * The player adds or takes away kills by hand (as {@link #setKc}, the game's counts seen so far are forgotten).
+	 */
 	public void addKc(String id, int n)
 	{
 		update(id, s ->
 		{
 			s.kc = Math.max(s.maxDropKc(), Math.max(0, s.kc + n));
+			s.labelKc = null;
 			return null;
+		});
+	}
+
+	/**
+	 * Sets the kill count to the game's own count of every kill of the boss (the player agreed to it, from a Collection Log page or the
+	 * Boss Kill Log), up or down, but never below the kill of the last drop with a kill number.  The game's counts become the ones last
+	 * seen.
+	 *
+	 * @param labels kill-count label (as in the boss data) to the game's count for it
+	 * @param total  the game's count of every kill
+	 * @return true when the kill count changed
+	 */
+	public boolean kcToGame(String id, Map<String, Integer> labels, int total)
+	{
+		return update(id, s ->
+		{
+			int to = Math.max(s.maxDropKc(), Math.max(0, total));
+			boolean changed = to != s.kc;
+			s.kc = to;
+			s.prov = null;
+			s.provDrops = null;
+			s.labels().clear();
+			s.labels().putAll(labels);
+			return changed;
 		});
 	}
 
@@ -808,6 +823,93 @@ public final class Ledger
 		return removed[0];
 	}
 
+	/**
+	 * Takes away copies of an item that the game's collection log shows fewer of than the ledger has.  The copies least likely to
+	 * be right go first: those a history import added with no kill number, then those typed in by hand, then those seen in game.
+	 * Within each, a copy that shares its kill with another copy of the item (counted twice) goes before the others, and then the
+	 * one recorded last.
+	 *
+	 * @param importedOnly take only copies a history import added with no kill number
+	 * @return how many were removed
+	 */
+	public int removeExtra(String id, String item, int n, boolean importedOnly)
+	{
+		if (n <= 0)
+		{
+			return 0;
+		}
+		return update(id, s ->
+		{
+			int removed = 0;
+			while (removed < n)
+			{
+				Map<Integer, Integer> perKill = new HashMap<>();
+				for (Drop d : s.drops)
+				{
+					if (d.item.equals(item) && d.kc != null)
+					{
+						perKill.merge(d.kc, 1, Integer::sum);
+					}
+				}
+				Drop pick = null;
+				for (Drop d : s.drops)
+				{
+					if (d.item.equals(item) && (!importedOnly || trust(d) == 0) && (pick == null || goesFirst(d, pick, perKill)))
+					{
+						pick = d;
+					}
+				}
+				if (pick == null)
+				{
+					break;
+				}
+				s.drops.remove(pick);
+				if (s.provDrops != null)
+				{
+					s.provDrops.remove(pick.id);
+				}
+				removed++;
+			}
+			return removed;
+		});
+	}
+
+	/**
+	 * 0 for a copy a history import added with no kill number, 1 for one typed in by hand, 2 for one seen in game.
+	 */
+	private static int trust(Drop d)
+	{
+		if (d.kc == null && Drop.SRC_IMPORT.equals(d.src))
+		{
+			return 0;
+		}
+		return Drop.SRC_MANUAL.equals(d.src) ? 1 : 2;
+	}
+
+	/**
+	 * Of two copies of one item, whether a is taken away before b.
+	 *
+	 * @param perKill kill number to the copies of the item at it
+	 */
+	private static boolean goesFirst(Drop a, Drop b, Map<Integer, Integer> perKill)
+	{
+		if (trust(a) != trust(b))
+		{
+			return trust(a) < trust(b);
+		}
+		boolean twiceA = a.kc != null && perKill.get(a.kc) > 1;
+		boolean twiceB = b.kc != null && perKill.get(b.kc) > 1;
+		if (twiceA != twiceB)
+		{
+			return twiceA;
+		}
+		if (a.t != b.t)
+		{
+			return a.t > b.t;
+		}
+		return (a.kc == null ? 0 : a.kc) > (b.kc == null ? 0 : b.kc);
+	}
+
 	public void updatePrefs(java.util.function.Consumer<Prefs> fn)
 	{
 		synchronized (this)
@@ -953,7 +1055,6 @@ public final class Ledger
 			Map<String, BossState> theirs;
 			Map<String, String> theirRetired;
 			Prefs p;
-			HistoryStage h;
 			synchronized (other)
 			{
 				theirs = new LinkedHashMap<>();
@@ -963,14 +1064,12 @@ public final class Ledger
 				}
 				theirRetired = new LinkedHashMap<>(other.retired);
 				p = other.prefs.copy();
-				h = other.history.copy();
 			}
 			bosses.clear();
 			bosses.putAll(theirs);
 			retired.clear();
 			retired.putAll(theirRetired);
 			prefs = p;
-			history = h;
 			globalRev++;
 			touch(null);
 		}
@@ -1004,19 +1103,6 @@ public final class Ledger
 	synchronized Map<String, String> rawRetired()
 	{
 		return retired;
-	}
-
-	void putHistory(HistoryStage h)
-	{
-		synchronized (this)
-		{
-			this.history = h;
-		}
-	}
-
-	synchronized HistoryStage rawHistory()
-	{
-		return history;
 	}
 
 	void putPrefs(Prefs p)

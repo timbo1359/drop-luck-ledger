@@ -141,7 +141,7 @@ public class LedgerPanelTest
 		assertEquals(2, o.lastView().tracked);
 		String t = fx.pageText();
 		assertTrue(t, t.contains("2 bosses tracked"));
-		assertTrue(t, t.contains("64 available"));
+		assertTrue(t, t.contains("68 available"));
 		assertFalse(t, t.contains("Longest dry streaks"));
 		assertFalse(t, t.contains("Driest so far"));
 		assertFalse(t, t.contains("Running hot"));
@@ -156,6 +156,19 @@ public class LedgerPanelTest
 	}
 
 	@Test
+	public void aVerySmallChanceShowsInTheTooltips()
+	{
+		// a pet in a few kills: under 0.1% of players would have a second by now
+		fx.ledger.setKc("vorkath", 5);
+		fx.ledger.logDrop("vorkath", "Vorki", 3, 1, null, Drop.SRC_MANUAL);
+		fx.settle();
+		JLabel spoon = Swings.label(fx.panel.bodyColumn(), "Vorki");
+		assertNotNull(spoon);
+		String tip = Swings.get(() -> Swings.plain(((javax.swing.JComponent) spoon.getParent()).getToolTipText()));
+		assertTrue(tip, tip.contains("<0.1% chance of copy 2 by now"));
+	}
+
+	@Test
 	public void theOverviewListsOnlyTheTickedBosses()
 	{
 		fx.ledger.setKc("zulrah", 300);
@@ -163,7 +176,7 @@ public class LedgerPanelTest
 		fx.ledger.setShown(java.util.Collections.singletonList("zulrah"), false);
 		fx.settle();
 		String t = fx.pageText();
-		assertTrue(t, t.contains("1 boss tracked \u00b7 63 of 64 shown"));
+		assertTrue(t, t.contains("1 boss tracked \u00b7 67 of 68 shown"));
 		assertTrue(t, t.contains("Duke Sucellus"));
 		assertFalse(t, t.contains("Zulrah"));
 		// the search says when a boss left out matches
@@ -443,7 +456,8 @@ public class LedgerPanelTest
 		Swings.edt(() -> bp.selectTab(BossPage.ABOUT));
 		t = fx.pageText();
 		assertTrue(t, t.contains("How Zulrah works"));
-		assertTrue(t, t.contains("Data confidence"));
+		assertFalse(t, t.contains("Data confidence"));
+		assertFalse(t, t.contains("Data: "));
 		assertEquals(BossPage.ABOUT, fx.ledger.prefs().tab);
 		// opening another boss starts on the tab used last
 		fx.openBoss("vorkath");
@@ -489,6 +503,40 @@ public class LedgerPanelTest
 	}
 
 	@Test
+	public void aRaidWhoseRatesAreNotPublishedIsTrackedWithoutLuck()
+	{
+		fx.ledger.setKc("the-fractured-archive", 12);
+		fx.ledger.logDrop("the-fractured-archive", "Rondache", 7, 1, null, Drop.SRC_LIVE);
+		fx.ledger.addOwned("the-fractured-archive", "Orion", 1);
+		fx.settle();
+		// nothing of it is a spoon: there is no rate to be ahead of
+		String overview = fx.pageText();
+		assertTrue(overview, overview.contains("The Fractured Archive"));
+		assertTrue(overview, overview.contains("No spoons yet"));
+		fx.openBoss("the-fractured-archive");
+		String t = Swings.text(fx.panel.bossPage());
+		assertTrue(t, t.contains("Rondache"));
+		assertTrue(t, t.contains("rate not published yet \u00b7 1 received"));
+		assertTrue(t, t.contains("rate not published yet \u00b7 0 received"));
+		assertFalse(t, t.contains("Any unique"));
+		assertFalse(t, t.contains("Very lucky"));
+		JLabel card = Swings.label(fx.panel.bossPage(), "Rondache");
+		String tip = Swings.get(() -> Swings.plain(((javax.swing.JComponent) card.getParent().getParent()).getToolTipText()));
+		assertTrue(tip, tip.contains("drop rate is not published yet"));
+		assertTrue(tip, tip.contains("Dry streak: 5 kills since your last, at kill 7"));
+		// the pet and the tertiaries are in the drop table too, without a chance
+		Swings.edt(() -> fx.panel.bossPage().selectTab(BossPage.TABLE));
+		fx.settle();
+		String table = Swings.text(fx.panel.bossPage());
+		assertTrue(table, table.contains("Orion"));
+		assertTrue(table, table.contains("Living record (tier 5)"));
+		Swings.edt(() -> fx.panel.bossPage().selectTab(BossPage.ABOUT));
+		fx.settle();
+		String about = Swings.text(fx.panel.bossPage());
+		assertTrue(about, about.contains("Drop rates not known yet"));
+	}
+
+	@Test
 	public void anIntegerAndAChoiceSettingAreWrittenToo()
 	{
 		fx.ledger.setKc("barrows", 100);
@@ -520,16 +568,20 @@ public class LedgerPanelTest
 		fx.ledger.update("general-graardor", st ->
 		{
 			st.liveFrom = 201;
-			st.seen = new java.util.LinkedHashMap<>(java.util.Collections.singletonMap("looted", 201));
+			st.seen = new java.util.LinkedHashMap<>();
+			st.seen.put("looted", 201);
+			st.seen.put("minions", 201);
 			java.util.Map<String, Object> d = com.dropluckledger.engine.Engine.defaultParams(fx.data.boss("general-graardor"));
 			Ledger.setKillParamsLocked(st, 250, java.util.Collections.singletonMap("looted", (Object) 0), d);
 			Ledger.setKillParamsLocked(st, 251, java.util.Collections.singletonMap("looted", (Object) 0), d);
+			Ledger.setKillParamsLocked(st, 260, java.util.Collections.singletonMap("minions", (Object) 0), d);
 			return null;
 		});
 		fx.openBoss("general-graardor");
 		assertTrue(Swings.text(fx.panel.bossPage()), Swings.text(fx.panel.bossPage()).contains("2 kills where another player got the loot"));
 		assertTrue(Swings.text(fx.panel.bossPage()), Swings.text(fx.panel.bossPage()).contains("your values are for kills 1\u2013200, the ones it did not see"));
-		assertTrue(Swings.text(fx.panel.bossPage()), Swings.text(fx.panel.bossPage()).contains("Read from the game for kills 201\u2013300: the loot was yours for 98 of 100."));
+		assertTrue(Swings.text(fx.panel.bossPage()), Swings.text(fx.panel.bossPage()).contains("Read from the game for kills 201\u2013300: the loot was yours for 98 of 100"));
+		assertTrue(Swings.text(fx.panel.bossPage()), Swings.text(fx.panel.bossPage()).contains("Bodyguards killed with each kill: 3 \u00d799, 0 \u00d71."));
 		// the setting is for the kills before the plugin saw any; the kills it saw keep what the game said
 		javax.swing.JSpinner looted = (javax.swing.JSpinner) fx.panel.bossPage().paramControls().get("looted");
 		Swings.edt(() -> looted.setValue(30));
@@ -826,6 +878,8 @@ public class LedgerPanelTest
 		fx.settle();
 		assertTrue(fx.ledger.trackedNames("zulrah").contains(name));
 		assertNotNull(cardFor(bp, name));
+		// its earlier copies are looked for in the drop log
+		assertEquals(java.util.Collections.singletonList("zulrah:" + name), fx.host.backfilled);
 		Swings.edt(() -> cardFor(bp, name).hideButton().doClick());
 		fx.settle();
 		assertFalse(fx.ledger.trackedNames("zulrah").contains(name));
@@ -904,22 +958,136 @@ public class LedgerPanelTest
 	}
 
 	@Test
-	public void aKillLogPageTheGameShowedCanBeAddedFromTheNote()
+	public void aPageReadThatMatchesTheLedgerOnlySaysSo()
 	{
-		fx.panel.historyRead("Boss Kill Log: 2 bosses read");
+		fx.panel.historyRead("Boss Kill Log read. Your ledger matches it.");
 		fx.settle();
-		assertEquals(List.of("Boss Kill Log: 2 bosses read"), fx.panel.noteTexts());
-		List<JButton> buttons = Swings.get(() -> fx.panel.noteButtons("read"));
-		assertEquals(1, buttons.size());
-		assertEquals("Add to my ledger…", buttons.get(0).getText());
-		fx.host.plan = planWithZulrah();
+		assertEquals(List.of("Boss Kill Log read. Your ledger matches it."), fx.panel.noteTexts());
+		assertTrue(Swings.get(() -> fx.panel.noteButtons("read")).isEmpty());
+	}
+
+	private HistoryPlanner.Plan syncPlan()
+	{
+		HistoryPlanner.Plan p = new HistoryPlanner.Plan();
+		p.sources.add("Collection Log (Zulrah)");
+		HistoryInput in = new HistoryInput();
+		in.kc.put("Zulrah", 150);
+		p.kc.addAll(fx.planner.plan(in).kc);
+		return p;
+	}
+
+	@Test
+	public void aListFromTheGamesRecordsIsAddedOnlyWhenThePlayerSays()
+	{
+		fx.panel.historyRead("Collection Log page read: Vorkath. Your ledger matches it.");
+		HistoryPlanner.Plan plan = syncPlan();
+		fx.panel.syncReady(plan, "Collection Log (Zulrah): kill count Zulrah 0 → 150. Nothing changes until you add it.");
+		fx.settle();
+		// it takes the place of the note about the page read before
+		assertEquals(List.of("Collection Log (Zulrah): kill count Zulrah 0 → 150. Nothing changes until you add it."), fx.panel.noteTexts());
+		assertSame(plan, fx.panel.syncPlan());
+		assertTrue(fx.host.synced.isEmpty());
+		List<JButton> buttons = Swings.get(() -> fx.panel.noteButtons("sync"));
+		assertEquals(List.of("Add", "Review…"), List.of(buttons.get(0).getText(), buttons.get(1).getText()));
+		fx.host.syncAnswer = new int[]{1, 0, 2};
 		Swings.edt(buttons.get(0)::doClick);
 		fx.settle();
-		assertEquals(1, fx.host.planRequests);
-		assertEquals(1234, fx.ledger.kc("zulrah"));
-		assertEquals(300, fx.ledger.kc("vorkath"));
-		// the note about the page read is gone once its contents are in
-		assertEquals(List.of("Added 2 kill counts and 2 owned items"), fx.panel.noteTexts());
+		assertEquals(List.of(plan), fx.host.synced);
+		assertNull(fx.panel.syncPlan());
+		assertEquals(List.of("From the game's records: 1 kill count set, 2 items taken away."), fx.panel.noteTexts());
+	}
+
+	@Test
+	public void aListFromTheGamesRecordsCanBeReviewedFirst()
+	{
+		HistoryPlanner.Plan plan = syncPlan();
+		fx.panel.syncReady(plan, "Collection Log (Zulrah): kill count Zulrah 0 → 150. Nothing changes until you add it.");
+		fx.settle();
+		fx.dialogs.formAnswer = false;
+		Swings.edt(Swings.get(() -> fx.panel.noteButtons("sync")).get(1)::doClick);
+		fx.settle();
+		assertEquals(List.of("form:Check against the game"), fx.dialogs.asked);
+		assertTrue(fx.host.synced.isEmpty());
+		assertSame(plan, fx.panel.syncPlan());
+		fx.dialogs.formAnswer = true;
+		Swings.edt(Swings.get(() -> fx.panel.noteButtons("sync")).get(1)::doClick);
+		fx.settle();
+		assertEquals(List.of(plan), fx.host.synced);
+		assertEquals(List.of("Nothing needed changing."), fx.panel.noteTexts());
+	}
+
+	@Test
+	public void linesLeftOutBecauseTheirBossChangedAreMentioned()
+	{
+		HistoryPlanner.Plan plan = syncPlan();
+		fx.panel.syncReady(plan, "Collection Log (Zulrah): kill count Zulrah 0 → 150. Nothing changes until you add it.");
+		fx.settle();
+		fx.host.syncAnswer = new int[]{0, 1, 0, 1};
+		Swings.edt(Swings.get(() -> fx.panel.noteButtons("sync")).get(0)::doClick);
+		fx.settle();
+		assertEquals(List.of("From the game's records: 1 item added. 1 line was left out, as the boss changed after the list was made; open its page "
+			+ "again to check it."), fx.panel.noteTexts());
+		fx.panel.syncReady(plan, "again");
+		fx.settle();
+		fx.host.syncAnswer = new int[]{0, 0, 0, 2};
+		Swings.edt(Swings.get(() -> fx.panel.noteButtons("sync")).get(0)::doClick);
+		fx.settle();
+		assertTrue(fx.panel.noteTexts().toString(), fx.panel.noteTexts().contains(
+			"Nothing was changed: the boss changed after the list was made. Open its page again to check it."));
+	}
+
+	@Test
+	public void dismissingAListFromTheGamesRecordsForgetsIt()
+	{
+		fx.panel.syncReady(syncPlan(), "Collection Log (Zulrah): kill count Zulrah 0 → 150. Nothing changes until you add it.");
+		fx.settle();
+		Swings.edt(Swings.get(() -> fx.panel.noteCross("sync"))::doClick);
+		fx.settle();
+		assertEquals(1, fx.host.syncDismissals);
+		assertTrue(fx.host.synced.isEmpty());
+		assertNull(fx.panel.syncPlan());
+		assertTrue(fx.panel.noteTexts().isEmpty());
+	}
+
+	@Test
+	public void aListWithOnlyANoteCanOnlyBeReviewed()
+	{
+		HistoryPlanner.Plan plan = new HistoryPlanner.Plan();
+		plan.sources.add("Collection Log (Skotizo)");
+		plan.notes.add("Skotizo: the game counts 5 kills, but the ledger has a drop at kill 50.");
+		fx.panel.syncReady(plan, "Collection Log (Skotizo): Skotizo: the game counts 5 kills, but the ledger has a drop at kill 50.");
+		fx.settle();
+		List<JButton> buttons = Swings.get(() -> fx.panel.noteButtons("sync"));
+		assertEquals(1, buttons.size());
+		assertEquals("Review…", buttons.get(0).getText());
+	}
+
+	@Test
+	public void aListFromTheGamesRecordsGoesWhenThePlayerLogsOut()
+	{
+		fx.panel.syncReady(syncPlan(), "Collection Log (Zulrah): kill count Zulrah 0 → 150. Nothing changes until you add it.");
+		fx.settle();
+		setState(fx, TrackingState.LOGGED_OUT);
+		assertNull(fx.panel.syncPlan());
+		assertFalse(fx.panel.noteTexts().toString(), fx.panel.noteTexts().toString().contains("Zulrah 0 → 150"));
+		assertEquals(0, fx.host.syncDismissals);
+	}
+
+	@Test
+	public void aListFromTheGamesRecordsIsNotPushedOutByLaterNotes()
+	{
+		HistoryPlanner.Plan plan = syncPlan();
+		fx.panel.syncReady(plan, "Collection Log (Zulrah): kill count Zulrah 0 → 150. Nothing changes until you add it.");
+		for (int i = 1; i <= 5; i++)
+		{
+			fx.panel.showDone("Logged drop " + i);
+		}
+		fx.settle();
+		List<String> notes = fx.panel.noteTexts();
+		assertEquals(4, notes.size());
+		assertTrue(notes.toString(), notes.contains("Collection Log (Zulrah): kill count Zulrah 0 → 150. Nothing changes until you add it."));
+		assertTrue(notes.toString(), notes.contains("Logged drop 5"));
+		assertSame(plan, fx.panel.syncPlan());
 	}
 
 	@Test

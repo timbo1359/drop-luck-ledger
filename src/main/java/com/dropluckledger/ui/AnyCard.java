@@ -56,20 +56,20 @@ final class AnyCard extends Column
 	{
 		Luck.AnyUnique u = any.u;
 		StringBuilder b = new StringBuilder("<b>").append(table ? "Unique table" : "Any unique").append("</b><br>").append(Look.esc(describe(any, table)));
-		b.append("<br><b>").append(Fmt.pct(u.another)).append("</b> chance of ").append(u.O > 0 ? "another " + (table ? "table hit" : "unique") : "one")
+		b.append("<br><b>").append(Fmt.pctHtml(u.another)).append("</b> chance of ").append(u.O > 0 ? "another " + (table ? "table hit" : "unique") : "one")
 			.append(" by now, from all your kills. ").append(Look.dim("Kills past the rate carry over to the next one."));
 		b.append("<br>Per kill: ").append(Look.esc(Fmt.rate(u.pNext)));
 		b.append("<br>").append(table ? "Table hits" : "Uniques").append(": ").append(u.O).append(" vs ").append(Fmt.expected(u.expected)).append(" expected");
 		if (known)
 		{
 			b.append("<br>Luck: ").append(Look.colored("<b>" + Look.esc(u.label.text) + "</b>", Look.luck(u.label.key))).append(" · luckier than ")
-				.append(Fmt.pct(u.pct)).append(" of players with the same kills");
+				.append(Fmt.pctHtml(u.pct)).append(" of players with the same kills");
 		}
-		b.append("<br>Chance of 1+ in all your kills: ").append(Fmt.pct(u.cum));
-		b.append("<br>Next ").append(u.window).append(" kills: ").append(Fmt.pct(u.fwd.get(u.window)));
+		b.append("<br>Chance of 1+ in all your kills: ").append(Fmt.pctHtml(u.cum));
+		b.append("<br>Next ").append(u.window).append(" kills: ").append(Fmt.pctHtml(u.fwd.get(u.window)));
 		if (u.streakKnown)
 		{
-			b.append("<br>Dry streak: ").append(Fmt.num(u.streak)).append(" kills since your last (").append(Fmt.pct(u.meter)).append(" would have had another)");
+			b.append("<br>Dry streak: ").append(Fmt.num(u.streak)).append(" kills since your last (").append(Fmt.pctHtml(u.meter)).append(" would have had another)");
 		}
 		else
 		{

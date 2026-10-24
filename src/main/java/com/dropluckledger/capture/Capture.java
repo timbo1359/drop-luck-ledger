@@ -6,6 +6,7 @@ import com.dropluckledger.engine.Data;
 import com.dropluckledger.engine.Data.Boss;
 import com.dropluckledger.engine.Data.Param;
 import com.dropluckledger.engine.Engine;
+import com.dropluckledger.ledger.BossState;
 import com.dropluckledger.ledger.Drop;
 import com.dropluckledger.ledger.Ledger;
 import java.util.ArrayList;
@@ -28,7 +29,8 @@ import org.slf4j.LoggerFactory;
  * a provisional kill and corrected when the chat line follows.  A few bosses work differently, as their data says
  * ({@link Boss#lootmode}): rewards taken later that never count as kills (Tempoross), runs that only show as loot
  * (Doom of Mokhaiotl), and bosses whose loot goes to the top damage dealer only, where a kill without loot paid another player.
- * Everything here runs on the game thread; the ledger takes care of its own locking.
+ * Everything here runs on the game thread, except adding the counts the player agreed to from a screen ({@link #onShownCount}); the
+ * methods are synchronized, and the ledger takes care of its own locking.
  */
 public final class Capture
 {
@@ -39,9 +41,14 @@ public final class Capture
 	 */
 	static final int SHORT_WINDOW = 100;
 	/**
-	 * Same for minigames and skilling bosses, where the reward is claimed some time after the kill count shows.
+	 * Same for raids, minigames and skilling bosses, where the reward is claimed some time after the kill count shows.
 	 */
 	static final int LONG_WINDOW = 3000;
+	/**
+	 * After a raid's kill-count message, how long a collection log or pet message still belongs to the raid: the chest is opened a
+	 * minute or two after the last boss dies (the loot itself, when the Loot Tracker reports it, counts from its own tick).
+	 */
+	static final int RAID_REWARD_WINDOW = 1000;
 	/**
 	 * For a boss where a kill without loot means something (another player got it, the corpse was destroyed, the loot sacrificed):
 	 * how long after the kill-count message the plugin waits for the loot before it decides there was none.  The loot appears a few
@@ -64,6 +71,20 @@ public final class Capture
 	public interface Listener
 	{
 		void dropLogged(String bossId, String item, int killNo);
+	}
+
+	/**
+	 * Told about every loot of a boss, with all its items (tracked or not), once its kill number is settled: the drop log.  Pets,
+	 * which do not show in the loot, come as a loot of their own.
+	 */
+	public interface LootLog
+	{
+		/**
+		 * @param t     epoch milliseconds when the loot came
+		 * @param items every item, named as the game names it (a pet with the boss data's name)
+		 * @param snap  for items several bosses drop, the other bosses' kill counts; null when none of the items is shared
+		 */
+		void loot(long t, String bossId, int killNo, List<Stack> items, Map<String, Integer> snap);
 	}
 
 	/**
@@ -117,6 +138,27 @@ public final class Capture
 		}
 	}
 
+	/**
+	 * A loot counted as a kill of its own before its kill-count message came: logged once the message settles the kill number.
+	 */
+	private static final class Held
+	{
+		final long t;
+		final int killNo;
+		final List<Stack> items;
+		final Map<String, Integer> snap;
+		final int tick;
+
+		Held(long t, int killNo, List<Stack> items, Map<String, Integer> snap, int tick)
+		{
+			this.t = t;
+			this.killNo = killNo;
+			this.items = items;
+			this.snap = snap;
+			this.tick = tick;
+		}
+	}
+
 	private static final class LastKill
 	{
 		final String bossId;
@@ -145,6 +187,21 @@ public final class Capture
 	private LastKill lastKill;
 	private int petSeenTick = NEVER;
 	private Listener listener;
+	private LootLog lootLog;
+	private final Map<String, List<Held>> held = new HashMap<>();
+	/**
+	 * Pets already logged (boss, pet and kill), so that the pet message and the collection log message log it once.
+	 */
+	private final Set<String> petsLogged = new HashSet<>();
+	/**
+	 * For a boss that counts the loots of its other monsters (EXTRACOUNT: the God Wars bodyguards), by boss: the kill the loots go to
+	 * (the latest one seen since login, as their drops do) and how many have come.  The count is that kill's own setting.
+	 */
+	private final Map<String, int[]> extraCounted = new HashMap<>();
+	/**
+	 * Those loots that came before the first kill seen since login: they are counted for that kill.
+	 */
+	private final Map<String, Integer> extraEarly = new HashMap<>();
 	/**
 	 * Whether RuneLite's Loot Tracker is on (as of the last tick).  Without it no loot is seen at all, so no kill is taken to have
 	 * paid another player.
@@ -164,22 +221,100 @@ public final class Capture
 		this.listener = l;
 	}
 
+	public synchronized void setLootLog(LootLog l)
+	{
+		this.lootLog = l;
+	}
+
 	/**
 	 * Forget the kills waiting for their loot (login, world hop).
 	 */
 	public synchronized void reset()
 	{
+		for (String id : new ArrayList<>(held.keySet()))
+		{
+			release(id, 0);
+		}
 		pending.clear();
 		markedNoLoot.clear();
 		secondChance.clear();
+		extraCounted.clear();
+		extraEarly.clear();
 		lastKill = null;
 		petSeenTick = NEVER;
+	}
+
+	/**
+	 * The most the boss's EXTRACOUNT setting can be (3 bodyguards).
+	 */
+	private static int extraMax(Boss boss)
+	{
+		for (Param p : boss.params)
+		{
+			if (p.name.equals(boss.extraCount))
+			{
+				return p.max == null ? Integer.MAX_VALUE : (int) Math.round(p.max);
+			}
+		}
+		return Integer.MAX_VALUE;
+	}
+
+	/**
+	 * A kill of a boss with an EXTRACOUNT setting, seen as it happened: it starts with the loots that came before it since login (none
+	 * most of the time), and the ones that come next are added to it.  For callers that hold the boss under {@link Ledger#update}.
+	 */
+	private void extraKillLocked(BossState s, Boss boss, String bossId, int killNo)
+	{
+		if (boss.extraCount == null || boss.extraCount.isEmpty())
+		{
+			return;
+		}
+		Integer early = extraEarly.remove(bossId);
+		int n = Math.min(extraMax(boss), early == null ? 0 : early);
+		extraCounted.put(bossId, new int[] {killNo, n});
+		Map<String, Object> patch = Collections.singletonMap(boss.extraCount, (Object) n);
+		Map<String, Object> defaults = Engine.defaultParams(boss);
+		Ledger.setKillParamsLocked(s, killNo, patch, defaults);
+		Ledger.noteReadLocked(s, boss, patch, killNo, killNo, defaults);
+	}
+
+	/**
+	 * A loot of one of the boss's other monsters (a bodyguard): one more for the kill its drops go to, when that kill was seen since
+	 * login, or for the next kill.  For callers that hold the boss under {@link Ledger#update}.
+	 */
+	private void extraLootLocked(BossState s, Boss boss, String bossId, int count)
+	{
+		int max = extraMax(boss);
+		int[] at = extraCounted.get(bossId);
+		if (at != null && at[0] == s.kc)
+		{
+			at[1] = Math.min(max, at[1] + count);
+			Ledger.setKillParamsLocked(s, at[0], Collections.singletonMap(boss.extraCount, (Object) at[1]), Engine.defaultParams(boss));
+		}
+		else
+		{
+			extraEarly.merge(bossId, count, (a, b) -> Math.min(max, a + b));
+		}
 	}
 
 	private static boolean longWindow(Boss b)
 	{
 		String c = b.cat == null ? "" : b.cat;
-		return c.equals("Minigame") || c.equals("Minigame boss") || c.equals("Skilling boss");
+		return isRaid(b) || c.equals("Minigame") || c.equals("Minigame boss") || c.equals("Skilling boss");
+	}
+
+	private static boolean isRaid(Boss b)
+	{
+		return "Raid".equals(b.cat);
+	}
+
+	/**
+	 * How long after the last kill a collection log or pet message still belongs to it.
+	 */
+	private int rewardWindow(LastKill k)
+	{
+		Boss b = data.boss(k.bossId);
+		return b != null && isRaid(b) ? RAID_REWARD_WINDOW : PET_WINDOW;
 	}
 
 	private static int window(Boss b)
@@ -220,6 +355,8 @@ public final class Capture
 		final Map<String, Object> patch = new LinkedHashMap<>(kl.patch);
 		final Boolean[] counted = {false};
 		final int[] kill = {0};
+		final int[] moved = {0};
+		final boolean[] lootFirst = {false};
 		ledger.update(id, s ->
 		{
 			Map<String, Integer> labels = s.labels();
@@ -244,6 +381,8 @@ public final class Capture
 			}
 			newKc = Math.max(newKc, s.maxDropKc());
 			int shift = newKc - cur;
+			lootFirst[0] = prov > 0;
+			moved[0] = shift;
 			if (prov > 0 && shift != 0 && s.provDrops != null)
 			{
 				for (Drop d : s.drops)
@@ -286,6 +425,7 @@ public final class Capture
 			int from = prov == 0 && gap > 1 ? cur + 1 : newKc;
 			Ledger.applyParamsLocked(s, from, patch, Engine.defaultParams(boss));
 			Ledger.noteReadLocked(s, boss, patch, newKc, from, Engine.defaultParams(boss));
+			extraKillLocked(s, boss, id, newKc);
 			kill[0] = newKc;
 			counted[0] = true;
 			if (prov == 0)
@@ -302,8 +442,125 @@ public final class Capture
 		});
 		if (counted[0])
 		{
+			if (lootFirst[0])
+			{
+				release(id, moved[0]);
+			}
 			killSeen(id, kill[0], tick);
 		}
+	}
+
+	/**
+	 * True while a kill of the boss waits for its loot (a raid's until the chest is opened): its loot will take the kill count as it
+	 * then is, so the count is not changed from a screen meanwhile.
+	 */
+	public synchronized boolean awaitingLoot(String bossId)
+	{
+		return pending.containsKey(bossId);
+	}
+
+	/**
+	 * What a count the game showed on screen did to the ledger.
+	 */
+	public static final class Raised
+	{
+		public final String bossId;
+		/**
+		 * The ledger's kill count before the count was read.
+		 */
+		public final int from;
+		/**
+		 * The ledger's kill count after.
+		 */
+		public final int to;
+
+		public Raised(String bossId, int from, int to)
+		{
+			this.bossId = bossId;
+			this.from = from;
+			this.to = to;
+		}
+	}
+
+	/**
+	 * A kill count the game shows on a screen (the Boss Kill Log, a collection log page), which the player agreed to add.  It is not a
+	 * new kill, but a count higher than the last one the ledger saw for that label means kills the plugin missed (made on another
+	 * computer, or with the plugin off).  They are added at once, with no drops on them, as the next kill-count message would add them.
+	 * A count the ledger already has, or a lower one, changes nothing.  May be called off the client thread.
+	 *
+	 * @param shown the activity as the screen wrote it ("Zulrah", "Chambers of Xeric (CM) completions")
+	 * @return what changed, or null when the kill count did not
+	 */
+	public synchronized Raised onShownCount(String shown, int n)
+	{
+		KcLabel kl = index.kcShown(shown);
+		if (kl == null || n <= 0)
+		{
+			return null;
+		}
+		final String id = kl.bossId;
+		final Boss boss = data.boss(id);
+		if (boss == null || boss.lootIsClaim())
+		{
+			return null; // every claimed reward is one run; the game's own count measures something else
+		}
+		if (pending.containsKey(id))
+		{
+			return null; // a kill whose loot is still to come: the next look at the screen catches up instead
+		}
+		BossState now = ledger.copyOf(id);
+		Integer last = now.labelKc == null ? null : now.labelKc.get(kl.label);
+		if (last != null && n <= last)
+		{
+			return null;
+		}
+		final Map<String, Object> defaults = Engine.defaultParams(boss);
+		int[] change = ledger.update(id, s ->
+		{
+			int[] c = raiseLocked(s, kl.label, n);
+			if (c != null)
+			{
+				// the kills missed are in the mode the label says (normal or awakened, challenge mode ...)
+				Ledger.applyParamsLocked(s, c[0] + 1, kl.patch, defaults);
+			}
+			return c;
+		});
+		release(id, 0); // the loot counted as kills of their own keeps its kill numbers
+		if (change == null)
+		{
+			return null;
+		}
+		log.debug("{}: {} kills the ledger missed, from the count on screen", id, change[1] - change[0]);
+		return new Raised(id, change[0], change[1]);
+	}
+
+	/**
+	 * What a count the game shows for one kill-count label makes of a boss's kill count, the same steps whether the ledger is being
+	 * changed or a copy of it is being looked at: the kills since the count last seen for the label are added, or, for a label never
+	 * seen, the game's count with the other labels' counts.  The labels and the kill count of the state given change.
+	 *
+	 * @return {kill count before, kill count after}, or null when the count adds no kill
+	 */
+	public static int[] raiseLocked(BossState s, String label, int n)
+	{
+		Map<String, Integer> labels = s.labels();
+		Integer prev = labels.get(label);
+		if (prev != null && n <= prev)
+		{
+			return null;
+		}
+		int cur = s.kc;
+		// kills counted from their loot alone are in the game's count too
+		int target = prev == null ? s.labelSum(label) + n : cur - s.provisional() + (n - prev);
+		labels.put(label, n);
+		s.prov = null;
+		s.provDrops = null;
+		if (target <= cur)
+		{
+			return null;
+		}
+		s.kc = target;
+		return new int[]{cur, target};
 	}
 
 	/**
@@ -313,6 +570,15 @@ public final class Capture
 	public synchronized void onTick(int tick, boolean lootTrackerOn)
 	{
 		this.lootTrackerOn = lootTrackerOn;
+		for (String id : new ArrayList<>(held.keySet()))
+		{
+			Boss b = data.boss(id);
+			List<Held> hs = held.get(id);
+			if (b == null || !hs.isEmpty() && tick - hs.get(hs.size() - 1).tick > window(b))
+			{
+				release(id, 0); // the kill-count message never came: the loot keeps the kill number it was counted at
+			}
+		}
 		if (pending.isEmpty() && markedNoLoot.isEmpty())
 		{
 			return;
@@ -391,6 +657,7 @@ public final class Capture
 		final boolean extra = boss.lootIsExtra() || index.isExtraLoot(id, e.name);
 		final int kills = Math.max(1, e.amount);
 		final int[] kill = {0};
+		final boolean[] counted = {false};
 		List<String> logged;
 		synchronized (this)
 		{
@@ -403,6 +670,10 @@ public final class Capture
 				{
 					// rewards of kills already counted (a reward cart, the bodyguards): the latest kill gets them
 					killNo = Math.max(1, s.kc);
+					if (boss.extraCount != null && !boss.extraCount.isEmpty() && index.isExtraLoot(id, e.name))
+					{
+						extraLootLocked(s, boss, id, kills);
+					}
 				}
 				else if (boss.lootIsClaim())
 				{
@@ -490,8 +761,10 @@ public final class Capture
 					out.add(item);
 				}
 				kill[0] = killNo;
+				counted[0] = provisional;
 				return out;
 			});
+			logLoot(id, kill[0], e, counted[0]);
 			for (String item : logged)
 			{
 				notifyLogged(id, item, kill[0]);
@@ -599,6 +872,132 @@ public final class Capture
 		return snap.isEmpty() ? null : snap;
 	}
 
+	// ------------------------------------------------------------------ the drop log
+
+	/**
+	 * Hands the whole loot to the drop log, or holds it while its kill number may still move (the loot came before its kill-count
+	 * message).
+	 */
+	private void logLoot(String bossId, int killNo, Loot e, boolean provisional)
+	{
+		if (lootLog == null || e.items.isEmpty())
+		{
+			return;
+		}
+		List<Stack> items = new ArrayList<>(e.items);
+		Held h = new Held(ledger.now(), killNo, items, lootSnap(bossId, items), e.tick);
+		if (provisional)
+		{
+			held.computeIfAbsent(bossId, k -> new ArrayList<>()).add(h);
+		}
+		else
+		{
+			emit(bossId, h, 0);
+		}
+	}
+
+	/**
+	 * Logs the loot held for a boss, its kill numbers moved as the kill-count message moved the kills counted from their loot.
+	 */
+	private void release(String bossId, int shift)
+	{
+		List<Held> hs = held.remove(bossId);
+		if (hs == null)
+		{
+			return;
+		}
+		for (Held h : hs)
+		{
+			emit(bossId, h, shift);
+		}
+	}
+
+	private void emit(String bossId, Held h, int shift)
+	{
+		LootLog l = lootLog;
+		if (l == null)
+		{
+			return;
+		}
+		try
+		{
+			l.loot(h.t, bossId, Math.max(1, h.killNo + shift), h.items, h.snap);
+		}
+		catch (RuntimeException ex)
+		{
+			log.debug("Drop log failed", ex);
+		}
+	}
+
+	/**
+	 * The other bosses' kill counts, for the items of the loot that several bosses drop.
+	 */
+	private Map<String, Integer> lootSnap(String bossId, List<Stack> items)
+	{
+		Map<String, Integer> snap = null;
+		for (Stack st : items)
+		{
+			String item = index.item(bossId, st.name);
+			Map<String, Integer> s = item == null ? null : snapFor(bossId, item);
+			if (s != null)
+			{
+				if (snap == null)
+				{
+					snap = new LinkedHashMap<>();
+				}
+				snap.putAll(s);
+			}
+		}
+		return snap;
+	}
+
+	/**
+	 * Logs a pet the player got, which never shows in the loot: the one the message names, or the boss's only pet.
+	 */
+	private void logPet(Boss boss, String bossId, int killNo, String itemName)
+	{
+		if (lootLog == null)
+		{
+			return;
+		}
+		String pet = null;
+		if (itemName != null)
+		{
+			String item = index.item(bossId, itemName);
+			if (item == null || !isPet(boss, item))
+			{
+				return; // other items come with the loot
+			}
+			pet = item;
+		}
+		else
+		{
+			for (Map.Entry<String, Engine.ItemMeta> m : boss.meta().entrySet())
+			{
+				if (m.getValue().isPet() && !m.getValue().hidden)
+				{
+					if (pet != null)
+					{
+						return; // more than one pet: cannot tell which
+					}
+					pet = m.getKey();
+				}
+			}
+		}
+		if (pet == null)
+		{
+			return;
+		}
+		if (petsLogged.size() > 200)
+		{
+			petsLogged.clear();
+		}
+		if (petsLogged.add(bossId + '|' + pet + '|' + killNo))
+		{
+			emit(bossId, new Held(ledger.now(), killNo, Collections.singletonList(new Stack(pet, 1)), snapFor(bossId, pet), 0), 0);
+		}
+	}
+
 	private void notifyLogged(String bossId, String item, int killNo)
 	{
 		Listener l = listener;
@@ -623,7 +1022,7 @@ public final class Capture
 	 */
 	public synchronized void onCollectionLog(String itemName, int tick)
 	{
-		if (itemName == null || lastKill == null || tick - lastKill.tick > PET_WINDOW)
+		if (itemName == null || lastKill == null || tick - lastKill.tick > rewardWindow(lastKill))
 		{
 			// the message may come first; remember it only for pets
 			return;
@@ -636,7 +1035,7 @@ public final class Capture
 	 */
 	public synchronized void onPetMessage(int tick)
 	{
-		if (lastKill != null && tick - lastKill.tick <= PET_WINDOW)
+		if (lastKill != null && tick - lastKill.tick <= rewardWindow(lastKill))
 		{
 			recordIfTracked(lastKill.bossId, lastKill.killNo, null);
 		}
@@ -666,6 +1065,7 @@ public final class Capture
 		{
 			return;
 		}
+		logPet(boss, bossId, killNo, itemName);
 		List<String> logged = ledger.update(bossId, s ->
 		{
 			List<String> tracked = ledger.trackedNames(bossId);

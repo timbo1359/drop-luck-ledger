@@ -51,11 +51,15 @@ public class ResourcesTest
 		{
 			assertNotNull(in);
 			Data data = Data.load(new Gson(), in);
-			// the web page's bosses but the raids, the Royal Titans and Wintertodt (src/plugin-exclude.txt in the web project)
-			assertEquals(64, data.bosses.size());
-			for (String left : new String[]{"chambers-of-xeric", "theatre-of-blood", "tombs-of-amascut", "royal-titans", "wintertodt"})
+			// the web page's bosses but the Royal Titans and Wintertodt (src/plugin-exclude.txt in the web project)
+			assertEquals(68, data.bosses.size());
+			for (String left : new String[]{"royal-titans", "wintertodt"})
 			{
 				assertNull(left, data.boss(left));
+			}
+			for (String raid : new String[]{"chambers-of-xeric", "theatre-of-blood", "tombs-of-amascut", "the-fractured-archive"})
+			{
+				assertNotNull(raid, data.boss(raid));
 			}
 		}
 	}

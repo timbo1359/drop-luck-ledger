@@ -73,6 +73,15 @@ public class FmtTest
 	}
 
 	@Test
+	public void percentagesInMarkupKeepTheirSigns()
+	{
+		assertEquals("&lt;0.1%", Fmt.pctHtml(0.0004));
+		assertEquals("&gt;99.9%", Fmt.pctHtml(0.9999));
+		assertEquals("38%", Fmt.pctHtml(0.38));
+		assertEquals("<0.1%", Swings.plain(Look.html(100, "x " + Fmt.pctHtml(0.0004))).replace("x ", ""));
+	}
+
+	@Test
 	public void ratesMatchTheWebApp()
 	{
 		JsonArray rows = fixture.getAsJsonArray("rate");
@@ -82,18 +91,6 @@ public class FmtTest
 			JsonElement in = row.get(0);
 			double p = in.getAsJsonPrimitive().isString() ? 0 : in.getAsDouble();
 			assertEquals("rateStr(" + in + ")", row.get(1).getAsString(), Fmt.rate(p));
-		}
-	}
-
-	@Test
-	public void ordinalsMatchTheWebApp()
-	{
-		JsonArray rows = fixture.getAsJsonArray("ord");
-		for (JsonElement r : rows)
-		{
-			JsonArray row = r.getAsJsonArray();
-			double in = row.get(0).getAsDouble();
-			assertEquals("ord(" + in + ")", row.get(1).getAsString(), Fmt.ord(in));
 		}
 	}
 

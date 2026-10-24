@@ -84,31 +84,6 @@ public final class LedgerCodec
 				}
 			}
 			root.add("bosses", bo);
-			HistoryStage h = ledger.rawHistory();
-			if (!h.isEmpty())
-			{
-				JsonObject ho = new JsonObject();
-				JsonObject kc = new JsonObject();
-				for (Map.Entry<String, Integer> e : h.kc.entrySet())
-				{
-					kc.addProperty(e.getKey(), e.getValue());
-				}
-				ho.add("kc", kc);
-				JsonObject log = new JsonObject();
-				for (Map.Entry<String, Map<String, Integer>> e : h.log.entrySet())
-				{
-					JsonObject page = new JsonObject();
-					for (Map.Entry<String, Integer> it : e.getValue().entrySet())
-					{
-						page.addProperty(it.getKey(), it.getValue());
-					}
-					log.add(e.getKey(), page);
-				}
-				ho.add("log", log);
-				ho.addProperty("kcTime", h.kcTime);
-				ho.addProperty("logTime", h.logTime);
-				root.add("history", ho);
-			}
 		}
 		return root;
 	}
@@ -293,45 +268,7 @@ public final class LedgerCodec
 				l.putBoss(e.getKey(), sanitizeBoss(l, boss, e.getValue().getAsJsonObject()));
 			}
 		}
-		HistoryStage hs = new HistoryStage();
-		if (root.has("history") && root.get("history").isJsonObject())
-		{
-			JsonObject ho = root.getAsJsonObject("history");
-			if (ho.has("kc") && ho.get("kc").isJsonObject())
-			{
-				for (Map.Entry<String, JsonElement> e : ho.getAsJsonObject("kc").entrySet())
-				{
-					int v = clamp(e.getValue(), 0, 100_000_000, 0);
-					if (v > 0)
-					{
-						hs.kc.put(e.getKey(), v);
-					}
-				}
-			}
-			if (ho.has("log") && ho.get("log").isJsonObject())
-			{
-				for (Map.Entry<String, JsonElement> e : ho.getAsJsonObject("log").entrySet())
-				{
-					if (!e.getValue().isJsonObject())
-					{
-						continue;
-					}
-					Map<String, Integer> page = new LinkedHashMap<>();
-					for (Map.Entry<String, JsonElement> it : e.getValue().getAsJsonObject().entrySet())
-					{
-						int v = clamp(it.getValue(), 0, 1_000_000, 0);
-						if (v > 0)
-						{
-							page.put(it.getKey(), v);
-						}
-					}
-					hs.log.put(e.getKey(), page);
-				}
-			}
-			hs.kcTime = lng(ho.get("kcTime"), 0);
-			hs.logTime = lng(ho.get("logTime"), 0);
-		}
-		l.putHistory(hs);
+		// a "history" block (what an earlier version kept of the game's screens) is no longer used, and goes at the next save
 		return l;
 	}
 

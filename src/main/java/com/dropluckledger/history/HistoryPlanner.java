@@ -11,6 +11,7 @@ import com.dropluckledger.ledger.BossState;
 import com.dropluckledger.ledger.Ledger;
 import com.dropluckledger.ledger.Period;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -47,16 +48,48 @@ public final class HistoryPlanner
 		 * Kill-count label (as in the boss data) to the count the source had.
 		 */
 		public final Map<String, Integer> labels;
+		/**
+		 * The game's count is below the ledger's: the line brings the ledger down to it (only from the game's own records, when they
+		 * show every kill count of the boss).
+		 */
+		public final boolean lower;
 		public boolean on;
 
 		KcRow(String bossId, String name, int cur, int to, Map<String, Integer> labels)
+		{
+			this(bossId, name, cur, to, labels, false);
+		}
+
+		KcRow(String bossId, String name, int cur, int to, Map<String, Integer> labels, boolean lower)
 		{
 			this.bossId = bossId;
 			this.name = name;
 			this.cur = cur;
 			this.to = to;
 			this.labels = labels;
-			this.on = to > cur;
+			this.lower = lower;
+			this.on = lower ? to < cur : to > cur;
+		}
+
+		/**
+		 * True when ticking the line changes something.
+		 */
+		public boolean changes()
+		{
+			return lower ? to < cur : to > cur;
+		}
+
+		/**
+		 * The game's count as read: its kill-count labels' counts added up.
+		 */
+		public int shown()
+		{
+			int n = 0;
+			for (int v : labels.values())
+			{
+				n += v;
+			}
+			return n;
 		}
 	}
 
@@ -93,6 +126,15 @@ public final class HistoryPlanner
 		 * source said.
 		 */
 		public final int quantity;
+		/**
+		 * The collection log shows fewer of the item than the ledger has: {@link #remove} copies go, the ones least likely to be right
+		 * first (see {@code Ledger.removeExtra}).
+		 */
+		public final boolean extra;
+		/**
+		 * With {@link #extra}: only copies a history import added with no kill number go (the item is held at several bosses).
+		 */
+		public final boolean importedOnly;
 		public boolean on;
 
 		ItemRow(String bossId, String bossName, String item, int want, int have, int imported, int cap, boolean assumed, int quantity)
@@ -107,7 +149,45 @@ public final class HistoryPlanner
 			this.remove = quantity > 0 ? Math.min(imported, Math.max(0, have - Math.min(want, cap))) : 0;
 			this.assumed = assumed;
 			this.quantity = quantity;
+			this.extra = false;
+			this.importedOnly = false;
 			this.on = add > 0 || remove > 0;
+		}
+
+		private ItemRow(String bossId, String bossName, String item, int shown, int have, int remove, boolean importedOnly)
+		{
+			this.bossId = bossId;
+			this.bossName = bossName;
+			this.item = item;
+			this.want = shown;
+			this.have = have;
+			this.cap = Integer.MAX_VALUE;
+			this.add = 0;
+			this.remove = remove;
+			this.assumed = false;
+			this.quantity = 0;
+			this.extra = true;
+			this.importedOnly = importedOnly;
+			this.on = remove > 0;
+		}
+
+		/**
+		 * A line taking away copies the collection log does not show.
+		 *
+		 * @param shown how many the collection log shows, over every boss that drops the item
+		 * @param have  the copies this boss holds
+		 */
+		static ItemRow extra(String bossId, String bossName, String item, int shown, int have, int remove, boolean importedOnly)
+		{
+			return new ItemRow(bossId, bossName, item, shown, have, remove, importedOnly);
+		}
+
+		/**
+		 * The most copies the row may bring the boss to.
+		 */
+		int cap()
+		{
+			return cap;
 		}
 
 		/**
@@ -133,13 +213,18 @@ public final class HistoryPlanner
 		public final List<String> itemsMissing = new ArrayList<>();
 		public int itemsTotal;
 		public final Set<String> sources = new LinkedHashSet<>();
+		/**
+		 * Things the records show that no line can settle, for the player to look at (an item one boss too many holds, at several
+		 * bosses).
+		 */
+		public final List<String> notes = new ArrayList<>();
 
 		public int kcToApply()
 		{
 			int n = 0;
 			for (KcRow r : kc)
 			{
-				if (r.on)
+				if (r.on && r.changes())
 				{
 					n++;
 				}
@@ -258,7 +343,6 @@ public final class HistoryPlanner
 		// ---- owned copies
 		Map<String, Integer> exact = new HashMap<>(); // bossId|item -> drops the source named a boss for
 		Map<String, Integer> quantities = new HashMap<>(); // bossId|item -> the received quantity behind it, when that is not the drops
-		Map<String, Integer> exactTotal = new HashMap<>(); // item -> the same over all bosses
 		class Page
 		{
 			int n;
@@ -308,11 +392,8 @@ public final class HistoryPlanner
 				quantities.put(key, e.getValue());
 			}
 		}
-		for (Map.Entry<String, Integer> e : exact.entrySet())
-		{
-			exactTotal.merge(e.getKey().substring(e.getKey().indexOf('|') + 1), e.getValue(), Integer::sum);
-		}
 		Map<String, int[]> want = new LinkedHashMap<>(); // bossId|item -> {copies, assumed}
+		Map<String, BossState> state = new HashMap<>(); // each boss's state, copied once
 		for (Map.Entry<String, Integer> e : exact.entrySet())
 		{
 			want.put(e.getKey(), new int[]{e.getValue(), 0});
@@ -355,24 +436,36 @@ public final class HistoryPlanner
 				}
 			}
 			int drops = Quantities.drops(data.boss(id), item, p.n);
-			int n = drops - exactTotal.getOrDefault(item, 0);
-			if (n <= 0)
+			// the collection log keeps one count for an item, whichever boss it came from: the copies the other bosses that drop it
+			// hold (once their own rows are added) are already part of that count, so only the rest belongs here
+			int others = 0;
+			for (String c : cands)
+			{
+				if (!c.equals(id))
+				{
+					int held = state.computeIfAbsent(c, ledger::copyOf).copies(item);
+					int[] theirs = want.get(c + '|' + item);
+					others += theirs == null ? held : Math.max(held, Math.min(theirs[0], copyCap(c, kcTo)));
+				}
+			}
+			String key = id + '|' + item;
+			int[] cur = want.get(key);
+			int target = drops - others;
+			if (target <= (cur == null ? 0 : cur[0]))
 			{
 				continue;
 			}
-			String key = id + '|' + item;
 			if (drops != p.n)
 			{
 				quantities.merge(key, p.n, Integer::sum);
 			}
-			int[] cur = want.get(key);
 			if (cur == null)
 			{
-				want.put(key, new int[]{n, assumed ? 1 : 0});
+				want.put(key, new int[]{target, assumed ? 1 : 0});
 			}
 			else
 			{
-				cur[0] += n;
+				cur[0] = target;
 				cur[1] = assumed ? 1 : cur[1];
 			}
 		}
@@ -380,13 +473,30 @@ public final class HistoryPlanner
 		{
 			String id = e.getKey().substring(0, e.getKey().indexOf('|'));
 			String item = e.getKey().substring(e.getKey().indexOf('|') + 1);
-			BossState st = ledger.copyOf(id);
+			BossState st = state.computeIfAbsent(id, ledger::copyOf);
 			plan.items.add(new ItemRow(id, data.boss(id).name, item, e.getValue()[0], st.copies(item), st.importedUnknown(item), copyCap(id, kcTo),
 				e.getValue()[1] != 0, quantities.getOrDefault(e.getKey(), 0)));
 		}
 		plan.items.sort(Comparator.<ItemRow, String>comparing(r -> r.bossName, String.CASE_INSENSITIVE_ORDER).thenComparing(r -> r.item));
 		plan.itemsMissing.addAll(missing);
 		return plan;
+	}
+
+	/**
+	 * The data's name for a collection-log item named as the game names it, or null when no boss lists it.
+	 */
+	String itemFor(String gameName)
+	{
+		return itemKey.get(Names.flat(gameName));
+	}
+
+	/**
+	 * The bosses whose collection log lists the item.
+	 */
+	List<String> bossesFor(String item)
+	{
+		List<String> l = logIndex.get(item);
+		return l == null ? Collections.<String>emptyList() : l;
 	}
 
 	/**
@@ -410,9 +520,9 @@ public final class HistoryPlanner
 		int removed = 0;
 		for (KcRow r : plan.kc)
 		{
-			if (!r.on)
+			if (!r.on || r.lower)
 			{
-				continue;
+				continue; // a count to lower comes only from the game's own records, which Catchup applies
 			}
 			final Boss boss = data.boss(r.bossId);
 			ledger.update(r.bossId, s ->
@@ -435,7 +545,11 @@ public final class HistoryPlanner
 		}
 		for (ItemRow r : plan.items)
 		{
-			if (r.on && (r.add > 0 || r.remove > 0))
+			if (r.on && r.extra)
+			{
+				removed += ledger.removeExtra(r.bossId, r.item, r.remove, r.importedOnly);
+			}
+			else if (r.on && (r.add > 0 || r.remove > 0))
 			{
 				// re-check against the ledger as it is now, in case something changed since the plan was made
 				BossState st = ledger.copyOf(r.bossId);

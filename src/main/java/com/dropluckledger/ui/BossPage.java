@@ -150,13 +150,11 @@ final class BossPage extends Column implements ItemCard.Actions
 	{
 		Column c = new Column(2);
 		c.add(Look.wrapped("<b>" + Look.esc(boss.name) + "</b>", Look.PAGE_TEXT, Look.bold().deriveFont(java.awt.Font.BOLD, Look.bold().getSize2D() + 3f), Look.TEXT));
-		Views.Confidence conf = Views.confidence(boss);
-		java.awt.Color cc = conf.level.equals("high") ? Look.GOOD : conf.level.equals("medium") ? Look.WARN : Look.BAD;
 		String counts = boss.kc.isEmpty() ? boss.name : String.join(", ", boss.kc);
 		JPanel line = new JPanel(new BorderLayout(6, 0));
 		line.setOpaque(false);
-		JLabel chips = Look.label("<html>" + Look.esc(boss.cat) + " · " + Look.colored("Data: " + Look.esc(conf.level), cc) + "</html>", Look.small(), Look.MUTED);
-		chips.setToolTipText(Look.tip("How completely the wiki drop data has been captured.<br>" + Look.dim("Kill counts the game shows for this boss: " + Look.esc(counts))));
+		JLabel chips = Look.label(boss.cat, Look.small(), Look.MUTED);
+		chips.setToolTipText(Look.tip("Kill counts the game shows for this boss: " + Look.esc(counts)));
 		line.add(chips, BorderLayout.CENTER);
 		JButton wiki = Look.link("Wiki");
 		wiki.setToolTipText("Open the wiki page");
@@ -812,7 +810,7 @@ final class BossPage extends Column implements ItemCard.Actions
 	private JComponent ownedRow()
 	{
 		JButton b = Look.button("Items I already own…");
-		b.setToolTipText(Look.tip("Starting out with items you got before you began tracking? Add them here, or use \"Add my game history\" in Settings."));
+		b.setToolTipText(Look.tip("Starting out with items you got before you began tracking? Add them here, or open this boss's Collection Log page in game."));
 		b.addActionListener(e -> ownedForm());
 		return b;
 	}
@@ -833,7 +831,10 @@ final class BossPage extends Column implements ItemCard.Actions
 		{
 			if (box.getSelectedIndex() > 0)
 			{
-				ledger.setTracked(id, (String) box.getSelectedItem(), true);
+				String item = (String) box.getSelectedItem();
+				ledger.setTracked(id, item, true);
+				// the copies received before are in the drop log, with the kills they came on
+				ctx.host().backfill(id, item);
 			}
 		});
 		c.add(box, BorderLayout.CENTER);
@@ -1079,7 +1080,6 @@ final class BossPage extends Column implements ItemCard.Actions
 	private List<Component> about()
 	{
 		List<Component> parts = new ArrayList<>();
-		Views.Confidence conf = Views.confidence(boss);
 		StringBuilder notes = new StringBuilder();
 		for (String n : boss.notes)
 		{
@@ -1100,30 +1100,12 @@ final class BossPage extends Column implements ItemCard.Actions
 			}
 			parts.add(Look.wrapped(f.toString(), Look.PAGE_TEXT, Look.small(), Look.TEXT));
 		}
-		StringBuilder c = new StringBuilder("<b>Data confidence: " + Look.esc(conf.level) + "</b><br>Sample data: "
-			+ Look.esc(boss.samples == null || boss.samples.isEmpty() ? "not stated on the wiki" : boss.samples) + ".");
-		if (!conf.unknown.isEmpty())
+		List<String> unknown = Views.unknownRates(boss);
+		if (!unknown.isEmpty())
 		{
-			c.append("<br><b>Rate not captured:</b> ").append(Look.esc(String.join(", ", conf.unknown))).append(" (shown, but left out of the luck maths).");
+			parts.add(Look.wrapped("<b>Drop rates not known yet:</b> " + Look.esc(String.join(", ", unknown)) + ". They are tracked and counted, but left out "
+				+ "of the luck figures until their rates are added.", Look.PAGE_TEXT, Look.small(), Look.TEXT));
 		}
-		if (!conf.inferred.isEmpty())
-		{
-			c.append("<br><b>Reconstructed rows:</b> ").append(Look.esc(String.join(", ", conf.inferred.subList(0, Math.min(12, conf.inferred.size())))))
-				.append(conf.inferred.size() > 12 ? "…" : "").append(".");
-		}
-		if (!conf.gaps.isEmpty())
-		{
-			c.append("<br><b>Known gaps:</b>");
-			for (String g : conf.gaps)
-			{
-				c.append("<br>• ").append(Look.esc(g));
-			}
-		}
-		if (conf.level.equals("high"))
-		{
-			c.append("<br>Every table was read from the wiki twice and sums to 100%.");
-		}
-		parts.add(Look.wrapped(c.toString(), Look.PAGE_TEXT, Look.small(), Look.TEXT));
 		JButton wiki = Look.link("Open the wiki page");
 		wiki.addActionListener(e -> LinkBrowser.browse(WIKI + boss.wiki));
 		JPanel w = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));

@@ -3,6 +3,7 @@ package com.dropluckledger.plugin;
 import java.awt.Component;
 import java.awt.image.BufferedImage;
 import java.util.List;
+import java.util.Map;
 import net.runelite.api.Skill;
 import net.runelite.client.util.Filepath;
 
@@ -52,6 +53,26 @@ public interface Game
 	default int varbit(int id)
 	{
 		return 0;
+	}
+
+	/**
+	 * A varplayer's value (0 when not set).
+	 */
+	default int varp(int id)
+	{
+		return 0;
+	}
+
+	/**
+	 * What an inventory of the game holds: item id to how many, over all its slots.  The server fills inventories the player never
+	 * sees too: the items of the collection log page on screen come in one ({@code InventoryID.COLLECTION_TRANSMIT}).
+	 *
+	 * @param inventoryId an id from {@code InventoryID}
+	 * @return null when the client has no such inventory
+	 */
+	default Map<Integer, Integer> inventory(int inventoryId)
+	{
+		return null;
 	}
 
 	/**

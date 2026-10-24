@@ -21,7 +21,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
@@ -33,6 +36,9 @@ import net.runelite.api.GameState;
 import net.runelite.api.ScriptID;
 import net.runelite.api.Skill;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.InventoryID;
+import net.runelite.api.gameval.VarPlayerID;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.util.Filepath;
 import net.runelite.http.api.loottracker.LootRecordType;
 import org.junit.After;
@@ -331,15 +337,26 @@ public class TrackerTest
 	{
 		start();
 		login(111);
-		say("Your completed Chambers of Xeric count is: <col=ff0000>51</col>.");
-		say("Your completed Theatre of Blood count is: <col=ff0000>12</col>.");
-		say("Your Tombs of Amascut: Expert Mode kill count is: <col=ff0000>7</col>.");
 		say("Your Royal Titans kill count is: <col=ff0000>10</col>.");
 		say("Your subdued Wintertodt count is: <col=ff0000>300</col>.");
-		loot("Tombs of Amascut", new int[]{425, 3, 12000}, COINS, 1);
 		loot("Branda the Fire Queen", null, COINS, 1);
 		loot("Reward cart (Wintertodt)", 99, COINS, 1);
 		assertTrue(tracker.core().ledger.activeBosses().isEmpty());
+	}
+
+	@Test
+	public void theRaidsAreRecorded() throws Exception
+	{
+		start();
+		login(111);
+		say("Your completed Chambers of Xeric count is: <col=ff0000>51</col>.");
+		say("Your completed Theatre of Blood count is: <col=ff0000>12</col>.");
+		say("Your completed Tombs of Amascut: Expert Mode count is: <col=ff0000>7</col>.");
+		say("Your completed The Fractured Archive count is: <col=ff0000>2</col>.");
+		assertEquals(51, boss("chambers-of-xeric").kc);
+		assertEquals(12, boss("theatre-of-blood").kc);
+		assertEquals(7, boss("tombs-of-amascut").kc);
+		assertEquals(2, boss("the-fractured-archive").kc);
 	}
 
 	@Test
@@ -508,18 +525,115 @@ public class TrackerTest
 		tracker.onWidgetLoaded(InterfaceID.KILL_LOG);
 	}
 
+	/**
+	 * The game draws a collection log page: its header lines (title first) and its items, from the inventory the game holds at that
+	 * moment.
+	 */
+	private void drawPage(FakeNode[] items, String... header)
+	{
+		FakeNode[] lines = new FakeNode[header.length];
+		for (int i = 0; i < header.length; i++)
+		{
+			lines[i] = FakeNode.text(header[i]);
+		}
+		game.widgets.put(InterfaceID.Collection.HEADER_TEXT, FakeNode.withChildren(lines));
+		game.widgets.put(InterfaceID.Collection.ITEMS_CONTENTS, FakeNode.withChildren(items));
+		tracker.onScriptPostFired(ScriptID.COLLECTION_DRAW_LIST);
+	}
+
+	/**
+	 * What the server has sent for the counts under a page's title: the three player variables every page draws them from.
+	 */
+	private void pageCounts(int... values)
+	{
+		int[] varps = {VarPlayerID.COLLECTION_CATEGORY_COUNT, VarPlayerID.COLLECTION_CATEGORY_COUNT2, VarPlayerID.COLLECTION_CATEGORY_COUNT3};
+		for (int i = 0; i < varps.length; i++)
+		{
+			game.varps.put(varps[i], i < values.length ? values[i] : 0);
+		}
+	}
+
+	/**
+	 * What the server has sent for the page on screen: the copies of its items.
+	 */
+	private void pageItems(int... idsAndCopies)
+	{
+		Map<Integer, Integer> inv = new HashMap<>();
+		for (int i = 0; i < idsAndCopies.length; i += 2)
+		{
+			inv.put(idsAndCopies[i], idsAndCopies[i + 1]);
+		}
+		game.inventories.put(InventoryID.COLLECTION_TRANSMIT, inv);
+	}
+
+	/**
+	 * Game ticks go by until a page drawn now has settled.
+	 */
+	private void settle() throws Exception
+	{
+		for (int i = 0; i < Tracker.SETTLE_TICKS; i++)
+		{
+			game.tick++;
+			tracker.onGameTick();
+		}
+		drain();
+	}
+
+	private HistoryPlanner.Plan offered() throws Exception
+	{
+		waitFor("the list from the game's records", () -> tracker.panel().syncPlan() != null);
+		return tracker.panel().syncPlan();
+	}
+
+	/**
+	 * The player presses Add on the list the panel offers.
+	 */
+	private int[] add() throws Exception
+	{
+		int[] done = tracker.host().applySync(offered());
+		drain();
+		return done;
+	}
+
 	@Test
-	public void theBossKillLogIsReadWhenItOpens() throws Exception
+	public void theBossKillLogIsReadWhenItOpensAndNothingChangesUntilThePlayerAgrees() throws Exception
 	{
 		start();
 		login(111);
-		openKillLog("Boss Kill Log", new String[]{"Zulrah", "Vorkath"}, new String[]{"1,500", "320"});
-		assertTrue(tracker.core().ledger.history().kc.isEmpty()); // read on the next tick, when the rows are filled in
+		openKillLog("Boss Kill Log", new String[]{"Zulrah", "Vorkath", "Kraken"}, new String[]{"1,500", "320", "0"});
+		drain();
+		assertNull(tracker.panel().syncPlan()); // read on the next tick, when the rows are filled in
 		tracker.onGameTick();
-		assertEquals(1500, (int) tracker.core().ledger.history().kc.get("Zulrah"));
-		assertEquals(320, (int) tracker.core().ledger.history().kc.get("Vorkath"));
-		// it is only staged: the ledger's own counts do not change until the player imports
+		// listed for the player, not added
+		HistoryPlanner.Plan plan = offered();
+		assertEquals(2, plan.kcToApply());
 		assertEquals(0, boss("zulrah").kc);
+		assertTrue(tracker.panel().noteTexts().toString(), tracker.panel().noteTexts().contains(
+			"Boss Kill Log: kill counts Vorkath 0 → 320, Zulrah 0 → 1,500. Nothing changes until you add them."));
+		// the player agrees: the kills it was missing count, with no drops on them
+		assertEquals(2, add()[0]);
+		assertEquals(1500, boss("zulrah").kc);
+		assertEquals(320, boss("vorkath").kc);
+		assertTrue(boss("zulrah").drops.isEmpty());
+		// read again with nothing new, it only says it was read
+		openKillLog("Boss Kill Log", new String[]{"Zulrah", "Vorkath"}, new String[]{"1,500", "320"});
+		tracker.onGameTick();
+		waitFor("the note", () -> tracker.panel().noteTexts().contains("Boss Kill Log read. Your ledger matches it."));
+	}
+
+	@Test
+	public void aCountThatWentTooHighIsOfferedBackDownToTheGames() throws Exception
+	{
+		start();
+		login(111);
+		// what an earlier version did with a collection log page drawn with the previous page's numbers
+		tracker.core().capture.onShownCount("Thermonuclear Smoke Devil kills", 5);
+		openKillLog("Boss Kill Log", new String[]{"Thermonuclear smoke devil"}, new String[]{"0"});
+		tracker.onGameTick();
+		assertTrue(offered().kc.get(0).lower);
+		assertEquals(5, boss("thermonuclear-smoke-devil").kc);
+		add();
+		assertEquals(0, boss("thermonuclear-smoke-devil").kc);
 	}
 
 	@Test
@@ -531,29 +645,235 @@ public class TrackerTest
 		tracker.onWidgetLoaded(InterfaceID.MENU_NEW);
 		openKillLog("Boss Kill Log", new String[]{"Zulrah"}, new String[]{"99,999"});
 		tracker.onGameTick();
-		assertTrue(tracker.core().ledger.history().kc.isEmpty());
+		drain();
+		assertNull(tracker.panel().syncPlan());
+		assertTrue(tracker.panel().noteTexts().toString(), tracker.panel().noteTexts().isEmpty());
 		// the same log in the player's own adventure log is read
 		game.widgets.put(InterfaceID.MenuNew.TITLE, FakeNode.withChildren(FakeNode.text("The Exploits of Tester")));
 		tracker.onWidgetLoaded(InterfaceID.MENU_NEW);
 		openKillLog("Boss Kill Log", new String[]{"Zulrah"}, new String[]{"123"});
 		tracker.onGameTick();
-		assertEquals(123, (int) tracker.core().ledger.history().kc.get("Zulrah"));
+		add();
+		assertEquals(123, boss("zulrah").kc);
 	}
 
 	@Test
-	public void collectionLogPagesAreReadAndTeachTheItemPictures() throws Exception
+	public void aCollectionLogPageIsReadOnceItHasSettled() throws Exception
 	{
 		start();
 		login(111);
-		game.widgets.put(InterfaceID.Collection.HEADER_TEXT, FakeNode.withChildren(FakeNode.text("Zulrah")));
-		game.widgets.put(InterfaceID.Collection.ITEMS_CONTENTS, FakeNode.withChildren(FakeNode.item(FANG, 2, true), FakeNode.item(11286, 0, false)));
-		tracker.onScriptPostFired(ScriptID.COLLECTION_DRAW_LIST);
-		assertEquals(2, (int) tracker.core().ledger.history().log.get("Zulrah").get("Tanzanite fang"));
+		pageItems(FANG, 2);
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 2, true), FakeNode.item(VISAGE, 0, false)}, "Zulrah", "Obtained: 1/8", "Zulrah kills: 0");
+		// the pictures are learnt at once, owned or not
 		assertEquals(FANG, tracker.core().icons.id("Tanzanite fang"));
-		assertEquals(VISAGE, tracker.core().icons.id("Skeletal visage")); // not owned, but on the page
+		assertEquals(VISAGE, tracker.core().icons.id("Skeletal visage"));
+		game.tick++;
+		tracker.onGameTick();
+		drain();
+		assertNull(tracker.panel().syncPlan());
+		game.tick++;
+		tracker.onGameTick();
+		HistoryPlanner.Plan plan = offered();
+		assertEquals(2, plan.copiesToAdd());
+		// its count, 0, is the ledger's too
+		assertTrue(plan.kc.isEmpty());
 		// other scripts are ignored
 		tracker.onScriptPostFired(1);
-		assertEquals(1, tracker.core().ledger.history().log.size());
+		settle();
+		assertSame(plan, tracker.panel().syncPlan());
+	}
+
+	@Test
+	public void clickingQuicklyThroughThePagesChecksOnlyThePageStoppedAt() throws Exception
+	{
+		start();
+		login(111);
+		// a tick apart, each page drawn with the previous page's count under its title, its own count coming just after
+		pageItems();
+		pageCounts(81);
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 0, false)}, "Zulrah", "Zulrah kills: 81");
+		pageCounts(5);
+		game.tick++;
+		tracker.onGameTick();
+		drawPage(new FakeNode[]{FakeNode.item(NECKLACE, 0, false)}, "Vorkath", "Vorkath kills: 5");
+		pageCounts(7);
+		game.tick++;
+		tracker.onGameTick();
+		pageItems(VISAGE, 1);
+		drawPage(new FakeNode[]{FakeNode.item(VISAGE, 1, true)}, "Chaos Elemental", "Chaos Elemental kills: 7");
+		pageCounts(50);
+		settle();
+		// only the page stopped at, with its own count
+		HistoryPlanner.Plan plan = offered();
+		assertEquals(Collections.singleton("Collection Log (Chaos Elemental)"), plan.sources);
+		assertEquals(1, plan.kc.size());
+		assertEquals("chaos-elemental", plan.kc.get(0).bossId);
+		assertEquals(50, plan.kc.get(0).to);
+		assertEquals(0, boss("chaos-elemental").kc);
+		assertEquals(0, boss("zulrah").kc);
+		assertEquals(0, boss("vorkath").kc);
+	}
+
+	@Test
+	public void aPageShowingFewerKillsThanTheLedgerOffersToBringItDown() throws Exception
+	{
+		start();
+		login(111);
+		// what an earlier version did with a page drawn with the previous page's numbers
+		tracker.core().capture.onShownCount("Araxxor kills", 81);
+		pageItems();
+		pageCounts(0);
+		drawPage(new FakeNode[0], "Araxxor", "Obtained: 0/10", "Personal Best: N/A", "Araxxor kills: 0");
+		settle();
+		waitFor("the note", () -> tracker.panel().noteTexts().contains(
+			"Collection Log (Araxxor): kill count Araxxor 81 → 0. Nothing changes until you add it."));
+		assertTrue(offered().kc.get(0).lower);
+		assertEquals(81, boss("araxxor").kc);
+		assertEquals(1, add()[0]);
+		assertEquals(0, boss("araxxor").kc);
+	}
+
+	@Test
+	public void aPageDrawnWithThePreviousPagesNumbersIsCheckedWithItsOwn() throws Exception
+	{
+		start();
+		login(111);
+		// the page before left 117 in the count; the Skotizo page is drawn before its own numbers come
+		pageItems();
+		pageCounts(117);
+		drawPage(new FakeNode[0], "Skotizo", "Obtained: 0/6", "Skotizo kills: 117");
+		pageCounts(5);
+		settle();
+		HistoryPlanner.Plan plan = offered();
+		assertEquals(1, plan.kc.size());
+		assertEquals(5, plan.kc.get(0).to);
+		assertEquals(0, boss("skotizo").kc);
+		// or the page is drawn again once they come: the last drawing counts
+		tracker.host().dismissSync();
+		pageCounts(117);
+		drawPage(new FakeNode[0], "Skotizo", "Obtained: 0/6", "Skotizo kills: 117");
+		pageCounts(7);
+		drawPage(new FakeNode[0], "Skotizo", "Obtained: 0/6", "Skotizo kills: 7");
+		settle();
+		waitFor("the new list", () -> tracker.panel().syncPlan() != null && tracker.panel().syncPlan() != plan);
+		assertEquals(7, tracker.panel().syncPlan().kc.get(0).to);
+	}
+
+	@Test
+	public void whatOfAPageHasSettledIsChecked() throws Exception
+	{
+		start();
+		login(111);
+		say("Your Zulrah kill count is: <col=ff0000>100</col>.");
+		game.tick += 200;
+		tracker.onGameTick();
+		// the count drawn with a 3 that two of the variables held, which then part ways: which one the page shows is not known, so
+		// only its items are checked
+		pageItems(FANG, 1);
+		pageCounts(3, 3, 0);
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 1, true)}, "Zulrah", "Obtained: 1/8", "Zulrah kills: 3");
+		pageCounts(9, 3, 0);
+		settle();
+		HistoryPlanner.Plan plan = offered();
+		assertTrue(plan.kc.isEmpty());
+		assertEquals(1, plan.copiesToAdd());
+		add();
+		// the items drawn before the server sent them (the fang faded, though the player has one), the count settled: only the count
+		pageCounts(100);
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 0, false)}, "Zulrah", "Obtained: 0/8", "Zulrah kills: 100");
+		settle();
+		waitFor("the note", () -> tracker.panel().noteTexts().contains(
+			"Collection Log, Zulrah: its items were still loading, so only its kill count was checked. Your ledger matches it."));
+		assertSame("no new list", plan, tracker.panel().syncPlan());
+		// neither settled: not checked at all
+		pageCounts(3, 3, 0);
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 0, false)}, "Zulrah", "Obtained: 0/8", "Zulrah kills: 3");
+		pageCounts(9, 3, 0);
+		settle();
+		waitFor("the last note", () -> tracker.panel().noteTexts().contains(
+			"Collection Log, Zulrah: it was still loading, so it was not checked. Open it again to check it."));
+		assertSame("no new list", plan, tracker.panel().syncPlan());
+		assertEquals(100, boss("zulrah").kc);
+	}
+
+	@Test
+	public void itemsDrawnBeforeTheServerSentThemAreNotChecked() throws Exception
+	{
+		start();
+		login(111);
+		// drawn with another page's items: the fang shows faded, though the player has one
+		pageItems(FANG, 1);
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 0, false)}, "Zulrah", "Obtained: 0/8");
+		settle();
+		waitFor("the note", () -> tracker.panel().noteTexts().contains(
+			"Collection Log, Zulrah: it was still loading, so it was not checked. Open it again to check it."));
+		assertNull(tracker.panel().syncPlan());
+	}
+
+	@Test
+	public void aPageWithAnItemDrawnForThePlayersBodyTypeIsStillChecked() throws Exception
+	{
+		start();
+		login(111);
+		// the game counts one item under its own id and draws the version for the player's body type, which has another id
+		game.varbits.put(VarbitID.COLLECTION_PLAYER_BODYTYPE, 1);
+		pageItems(FANG, 1, 6184, 1);
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 1, true), FakeNode.item(6186, 1, true)}, "Zulrah");
+		settle();
+		assertEquals(1, offered().copiesToAdd());
+	}
+
+	@Test
+	public void aPageWhoseBossChangedWhileItOpenedIsNotChecked() throws Exception
+	{
+		start();
+		login(111);
+		pageItems(FANG, 1);
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 1, true)}, "Zulrah");
+		// a kill and a fang come in before the page has settled: its count may be from before them
+		say("Your Zulrah kill count is: <col=ff0000>100</col>.");
+		loot("Zulrah", null, FANG, 1);
+		settle();
+		waitFor("the note", () -> tracker.panel().noteTexts().contains(
+			"Collection Log, Zulrah: your ledger changed while it opened, so it was not checked. Open it again to check it."));
+		assertNull(tracker.panel().syncPlan());
+		// opened again, it is checked
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 1, true)}, "Zulrah");
+		settle();
+		waitFor("the note", () -> tracker.panel().noteTexts().contains("Collection Log page read: Zulrah. Your ledger matches it."));
+	}
+
+	@Test
+	public void aKillBetweenTheBossKillLogOpeningAndBeingReadIsKept() throws Exception
+	{
+		start();
+		login(111);
+		say("Your Zulrah kill count is: <col=ff0000>100</col>.");
+		game.tick += 200;
+		tracker.onGameTick();
+		openKillLog("Boss Kill Log", new String[]{"Zulrah", "Vorkath"}, new String[]{"100", "7"});
+		// the log's counts were sent as it opened; a kill (its loot seen) lands before it is read
+		say("Your Zulrah kill count is: <col=ff0000>101</col>.");
+		loot("Zulrah", null);
+		tracker.onGameTick();
+		HistoryPlanner.Plan plan = offered();
+		assertEquals(1, plan.kc.size());
+		assertEquals("vorkath", plan.kc.get(0).bossId);
+		assertEquals(101, boss("zulrah").kc);
+	}
+
+	@Test
+	public void aPageDrawnBeforeHoppingIsNotChecked() throws Exception
+	{
+		start();
+		login(111);
+		pageItems(FANG, 1);
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 1, true)}, "Zulrah");
+		tracker.onGameStateChanged(GameState.HOPPING);
+		tracker.onGameStateChanged(GameState.LOGGED_IN);
+		settle();
+		assertNull(tracker.panel().syncPlan());
+		assertTrue(tracker.panel().noteTexts().toString(), tracker.panel().noteTexts().isEmpty());
 	}
 
 	@Test
@@ -562,7 +882,9 @@ public class TrackerTest
 		start();
 		openKillLog("Boss Kill Log", new String[]{"Zulrah"}, new String[]{"5"});
 		tracker.onGameTick();
-		assertTrue(tracker.core().ledger.history().kc.isEmpty());
+		drain();
+		assertNull(tracker.panel().syncPlan());
+		assertEquals(0, boss("zulrah").kc);
 	}
 
 	// ------------------------------------------------------------------ offering history in the panel
@@ -634,25 +956,128 @@ public class TrackerTest
 	}
 
 	@Test
-	public void readingTheKillLogTellsThePlayer() throws Exception
-	{
-		start();
-		login(111);
-		openKillLog("Boss Kill Log", new String[]{"Zulrah", "Vorkath"}, new String[]{"1,500", "320"});
-		tracker.onGameTick();
-		waitFor("the note", () -> tracker.panel().noteTexts().contains("Boss Kill Log: 2 bosses read"));
-		assertEquals(0, boss("zulrah").kc);
-	}
-
-	@Test
 	public void readingACollectionLogPageTellsThePlayer() throws Exception
 	{
 		start();
 		login(111);
-		game.widgets.put(InterfaceID.Collection.HEADER_TEXT, FakeNode.withChildren(FakeNode.text("Zulrah")));
-		game.widgets.put(InterfaceID.Collection.ITEMS_CONTENTS, FakeNode.withChildren(FakeNode.item(FANG, 2, true)));
-		tracker.onScriptPostFired(ScriptID.COLLECTION_DRAW_LIST);
-		waitFor("the note", () -> tracker.panel().noteTexts().contains("Collection Log page read: Zulrah"));
+		pageItems();
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 0, false)}, "Zulrah");
+		settle();
+		waitFor("the note", () -> tracker.panel().noteTexts().contains("Collection Log page read: Zulrah. Your ledger matches it."));
+	}
+
+	@Test
+	public void aCollectionLogPageCatchesTheLedgerUpWithAnotherComputer() throws Exception
+	{
+		start();
+		login(111);
+		say("Your Zulrah kill count is: <col=ff0000>100</col>.");
+		game.tick += 200;
+		tracker.onGameTick();
+		// 40 more kills and a fang on the other computer
+		openKillLog("Boss Kill Log", new String[]{"Zulrah"}, new String[]{"140"});
+		tracker.onGameTick();
+		pageItems(FANG, 1);
+		pageCounts(140);
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 1, true)}, "Zulrah", "Obtained: <col=ff0000>1/8</col>", "Zulrah kills: <col=ffffff>140</col>");
+		settle();
+		waitFor("the note", () -> tracker.panel().noteTexts().contains(
+			"Boss Kill Log, Collection Log (Zulrah): kill count Zulrah 100 → 140; Tanzanite fang +1. Nothing changes until you add them."));
+		assertEquals(100, boss("zulrah").kc);
+		add();
+		BossState z = boss("zulrah");
+		assertEquals(140, z.kc);
+		assertEquals(1, z.copies("Tanzanite fang"));
+		assertNull(z.drops.get(0).kc);
+		// the next kill on this computer follows on from there
+		say("Your Zulrah kill count is: <col=ff0000>141</col>.");
+		assertEquals(141, boss("zulrah").kc);
+	}
+
+	@Test
+	public void aCollectionLogOpenedFromTheBookInAnotherPlayersHouseIsNotRead() throws Exception
+	{
+		start();
+		login(111);
+		game.widgets.put(InterfaceID.MenuNew.TITLE, FakeNode.withChildren(FakeNode.text("The Exploits of Someone Else")));
+		tracker.onWidgetLoaded(InterfaceID.MENU_NEW);
+		tracker.onGameTick();
+		game.varbits.put(VarbitID.COLLECTION_POH_HOST_BOOK_OPEN, 1);
+		pageItems(FANG, 3);
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 3, true)}, "Zulrah");
+		settle();
+		assertNull(tracker.panel().syncPlan());
+		// the book in the player's own house is the player's log
+		game.widgets.put(InterfaceID.MenuNew.TITLE, FakeNode.withChildren(FakeNode.text("The Exploits of Tester")));
+		tracker.onWidgetLoaded(InterfaceID.MENU_NEW);
+		tracker.onGameTick();
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 3, true)}, "Zulrah");
+		settle();
+		assertEquals(3, offered().copiesToAdd());
+		// a house whose owner is not known: not read
+		HistoryPlanner.Plan before = tracker.panel().syncPlan();
+		tracker.onGameStateChanged(GameState.LOADING);
+		pageItems(FANG, 4);
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 4, true)}, "Zulrah");
+		settle();
+		assertSame(before, tracker.panel().syncPlan());
+	}
+
+	@Test
+	public void aCollectionLogPageOffersToTakeAwayCopiesTheGameDoesNotCount() throws Exception
+	{
+		start();
+		login(111);
+		say("Your Zulrah kill count is: <col=ff0000>100</col>.");
+		loot("Zulrah", null, FANG, 1);
+		game.tick += 200;
+		tracker.onGameTick();
+		// a second fang typed in by hand, which the game never gave
+		tracker.core().ledger.logDrop("zulrah", "Tanzanite fang", 60, 1, null, Drop.SRC_MANUAL);
+		assertEquals(2, boss("zulrah").copies("Tanzanite fang"));
+		pageItems(FANG, 1);
+		pageCounts(100);
+		drawPage(new FakeNode[]{FakeNode.item(FANG, 1, true)}, "Zulrah", "Obtained: <col=ff0000>1/8</col>", "Zulrah kills: <col=ffffff>100</col>");
+		settle();
+		waitFor("the note", () -> tracker.panel().noteTexts().contains(
+			"Collection Log (Zulrah): Tanzanite fang −1. Nothing changes until you add it."));
+		assertEquals(2, boss("zulrah").copies("Tanzanite fang"));
+		assertEquals(1, add()[2]);
+		// the copy typed in by hand goes, the one seen in game stays
+		BossState z = boss("zulrah");
+		assertEquals(1, z.copies("Tanzanite fang"));
+		assertEquals(Drop.SRC_LIVE, z.drops.get(0).src);
+		assertEquals(Integer.valueOf(100), z.drops.get(0).kc);
+	}
+
+	@Test
+	public void aDismissedListIsForgottenAndAnotherAccountIsNotOfferedIt() throws Exception
+	{
+		start();
+		login(111);
+		openKillLog("Boss Kill Log", new String[]{"Zulrah"}, new String[]{"150"});
+		tracker.onGameTick();
+		HistoryPlanner.Plan plan = offered();
+		tracker.host().dismissSync();
+		// a page that matches the ledger does not bring the dismissed list back
+		pageItems();
+		drawPage(new FakeNode[0], "Vorkath");
+		settle();
+		waitFor("the note", () -> tracker.panel().noteTexts().contains("Collection Log page read: Vorkath. Your ledger matches it."));
+		assertEquals(0, tracker.host().applySync(plan)[0]);
+		assertEquals(0, boss("zulrah").kc);
+		// read again, then another account logs in: the list goes with the first account
+		openKillLog("Boss Kill Log", new String[]{"Zulrah"}, new String[]{"150"});
+		tracker.onGameTick();
+		drain();
+		HistoryPlanner.Plan first = offered();
+		logout();
+		assertNull(tracker.panel().syncPlan());
+		login(222);
+		drain();
+		assertNull(tracker.panel().syncPlan());
+		assertEquals(0, tracker.host().applySync(first)[0]);
+		assertEquals(0, boss("zulrah").kc);
 	}
 
 	@Test
@@ -729,6 +1154,59 @@ public class TrackerTest
 		assertTrue(asked.isEmpty());
 		assertFalse(new File(tmp.getRoot(), "mine.json").exists());
 		assertTrue(tracker.panel().noteTexts().isEmpty());
+	}
+
+	// ------------------------------------------------------------------ the drop log
+
+	@Test
+	public void everyLootGoesInTheDropLogAndAnItemTrackedLaterGetsItsCopies() throws Exception
+	{
+		start();
+		login(111);
+		say(vorkathKc(40));
+		loot("Vorkath", null, COINS, 40_000, VISAGE, 1);
+		say(vorkathKc(41));
+		loot("Vorkath", null, COINS, 38_000);
+		drain();
+		File dropLog = new File(data, "drop-luck-ledger/drops-111.jsonl");
+		java.util.List<String> lines = Files.readAllLines(dropLog.toPath(), StandardCharsets.UTF_8);
+		assertEquals(2, lines.size());
+		assertTrue(lines.get(0), lines.get(0).contains("\"boss\":\"vorkath\",\"kill\":40,\"items\":[[\"Coins\",40000],[\"Skeletal visage\",1]]"));
+		// coins are not tracked: the ledger has only the visage
+		assertEquals(1, boss("vorkath").drops.size());
+		// tracking coins brings in both stacks, at their kills
+		tracker.core().ledger.setTracked("vorkath", "Coins", true);
+		tracker.host().backfill("vorkath", "Coins");
+		waitFor("the coins", () -> boss("vorkath").copies("Coins") == 2);
+		assertEquals(Integer.valueOf(41), boss("vorkath").drops.get(2).kc);
+		waitFor("the note", () -> tracker.panel().noteTexts().stream().anyMatch(t -> t.startsWith("Coins: 2 copies you got before you tracked it were added")));
+		// each account has its own log
+		logout();
+		login(222);
+		say(vorkathKc(3));
+		loot("Vorkath", null, COINS, 100);
+		drain();
+		assertTrue(new File(data, "drop-luck-ledger/drops-222.jsonl").isFile());
+		assertEquals(2, Files.readAllLines(dropLog.toPath(), StandardCharsets.UTF_8).size());
+		// erasing the ledger erases its log
+		tracker.host().eraseDropLog();
+		drain();
+		assertFalse(new File(data, "drop-luck-ledger/drops-222.jsonl").exists());
+		assertTrue(dropLog.isFile());
+	}
+
+	@Test
+	public void nothingIsLoggedOnAWorldWithItsOwnSave() throws Exception
+	{
+		start();
+		login(111);
+		game.standardWorld = false;
+		tracker.onGameStateChanged(GameState.LOGGED_IN);
+		waitFor("paused", () -> tracker.state() == TrackingState.PAUSED);
+		say(vorkathKc(900));
+		loot("Vorkath", null, COINS, 1);
+		drain();
+		assertFalse(new File(data, "drop-luck-ledger/drops-111.jsonl").exists());
 	}
 
 	// ------------------------------------------------------------------ item pictures

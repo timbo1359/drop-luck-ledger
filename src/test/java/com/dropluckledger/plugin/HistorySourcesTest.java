@@ -33,7 +33,7 @@ public class HistorySourcesTest
 
 	private HistoryInput collect()
 	{
-		return HistorySources.collect(ledger, game, gson, index);
+		return HistorySources.collect(game, gson, index);
 	}
 
 	private static int kc(HistoryInput in, String label)
@@ -45,15 +45,15 @@ public class HistorySourcesTest
 	public void readsTheKillCountsChatCommandsSaved()
 	{
 		game.save("killcount", "zulrah", "1500").save("killcount", "corrupted gauntlet", "42").save("killcount", "k'ril tsutsaroth", "300")
-			.save("killcount", "chambers of xeric", "70");
+			.save("killcount", "chambers of xeric", "70").save("killcount", "royal titans", "12");
 		HistoryInput in = collect();
 		assertEquals(1500, kc(in, "zulrah"));
 		assertEquals(42, kc(in, "corrupted gauntlet"));
 		assertTrue(in.sources.contains(HistorySources.SRC_KC));
 		HistoryPlanner.Plan plan = new HistoryPlanner(ledger, index).plan(in);
-		assertEquals(3, plan.kc.size());
+		assertEquals(4, plan.kc.size());
 		// a boss the plugin leaves out is not used
-		assertEquals(java.util.Collections.singletonList("chambers of xeric 70"), plan.kcSkipped);
+		assertEquals(java.util.Collections.singletonList("royal titans 12"), plan.kcSkipped);
 	}
 
 	@Test
@@ -103,8 +103,11 @@ public class HistorySourcesTest
 		game.save("loottracker", "drops_NPC_Man", "{\"type\":\"NPC\",\"name\":\"Man\",\"kills\":99,\"drops\":[12922,1]}");
 		HistoryInput in = collect();
 		assertEquals(10, kc(in, "Lunar Chest"));
-		assertEquals(1, in.kc.size());
-		assertTrue(in.owned.isEmpty());
+		assertEquals(30, kc(in, "Chambers of Xeric"));
+		assertEquals(2, in.kc.size());
+		// a raid's chest is an event too; the tanzanite fang is not a raid item, so nothing is owned
+		assertEquals(1, in.owned.size());
+		assertEquals("chambers-of-xeric", in.owned.get(0).bossId);
 	}
 
 	@Test
@@ -131,28 +134,10 @@ public class HistorySourcesTest
 	}
 
 	@Test
-	public void screenReadingsComeFromTheLedger()
-	{
-		ledger.updateHistory(h ->
-		{
-			h.kc.put("Zulrah", 700);
-			java.util.Map<String, Integer> page = new java.util.LinkedHashMap<>();
-			page.put("Tanzanite fang", 1);
-			h.log.put("Zulrah", page);
-		});
-		HistoryInput in = collect();
-		assertEquals(700, kc(in, "Zulrah"));
-		assertEquals(1, in.owned.size());
-		assertTrue(in.sources.contains(HistorySources.SRC_KILL_LOG));
-		assertTrue(in.sources.contains(HistorySources.SRC_COLLECTION));
-	}
-
-	@Test
 	public void sourcesAgreeAndTheLargestCountWins()
 	{
 		game.save("killcount", "zulrah", "1500");
 		game.save("loottracker", "drops_NPC_Zulrah", "{\"type\":\"NPC\",\"name\":\"Zulrah\",\"kills\":400,\"drops\":[12922,1]}");
-		ledger.updateHistory(h -> h.kc.put("Zulrah", 1490));
 		HistoryPlanner.Plan plan = new HistoryPlanner(ledger, index).plan(collect());
 		assertEquals(1500, plan.kc.get(0).to);
 	}
@@ -206,12 +191,11 @@ public class HistorySourcesTest
 	@Test
 	public void itemsThePluginLeavesOutAreNotAdded()
 	{
-		java.util.Map<String, Integer> huey = new java.util.LinkedHashMap<>();
-		huey.put("Tooth half of key", 2);
-		huey.put("Dragon hunter wand", 1);
-		ledger.updateHistory(h -> h.log.put("The Hueycoatl", huey));
-		ledger.updateHistory(h -> h.log.put("Royal Titans", new java.util.LinkedHashMap<>(java.util.Collections.singletonMap("Giantsoul amulet (uncharged)", 4))));
-		HistoryPlanner.Plan plan = new HistoryPlanner(ledger, index).plan(collect());
+		HistoryInput in = new HistoryInput();
+		in.addOwned(null, "The Hueycoatl", "Tooth half of key", 2, "Collection Log");
+		in.addOwned(null, "The Hueycoatl", "Dragon hunter wand", 1, "Collection Log");
+		in.addOwned(null, "Royal Titans", "Giantsoul amulet (uncharged)", 4, "Collection Log");
+		HistoryPlanner.Plan plan = new HistoryPlanner(ledger, index).plan(in);
 		assertTrue(plan.itemsMissing.toString(), plan.itemsMissing.contains("Tooth half of key"));
 		assertTrue(plan.itemsMissing.toString(), plan.itemsMissing.contains("Giantsoul amulet (uncharged)"));
 		int wands = 0;

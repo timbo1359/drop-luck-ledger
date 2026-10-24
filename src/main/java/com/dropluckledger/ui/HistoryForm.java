@@ -73,6 +73,10 @@ final class HistoryForm extends JPanel
 	private static String leftOut(HistoryPlanner.Plan p)
 	{
 		StringBuilder b = new StringBuilder();
+		for (String note : p.notes)
+		{
+			b.append(Look.esc(note)).append("<br>");
+		}
 		if (!p.kcSkipped.isEmpty())
 		{
 			b.append("Not used: ").append(Look.esc(String.join(" · ", p.kcSkipped.subList(0, Math.min(25, p.kcSkipped.size())))));
@@ -138,17 +142,33 @@ final class HistoryForm extends JPanel
 		int k = plan.kcToApply();
 		int rows = plan.itemRowsToApply();
 		int c = plan.copiesToAdd();
-		int back = plan.copiesToRemove();
+		int extra = 0;
+		int back = 0;
+		for (HistoryPlanner.ItemRow r : plan.items)
+		{
+			if (r.on && r.extra)
+			{
+				extra += r.remove;
+			}
+			else if (r.on)
+			{
+				back += r.remove;
+			}
+		}
 		List<String> parts = new ArrayList<>();
 		if (k > 0)
 		{
-			parts.add(k + " kill count" + (k == 1 ? "" : "s"));
+			parts.add("set " + k + " kill count" + (k == 1 ? "" : "s"));
 		}
 		if (c > 0)
 		{
-			parts.add(c + " owned item" + (c == 1 ? "" : "s") + " (" + rows + " line" + (rows == 1 ? "" : "s") + ")");
+			parts.add("add " + c + " owned item" + (c == 1 ? "" : "s") + " (" + rows + " line" + (rows == 1 ? "" : "s") + ")");
 		}
-		String text = parts.isEmpty() ? "" : "Will add: " + String.join(" and ", parts);
+		if (extra > 0)
+		{
+			parts.add("take away " + extra + " item" + (extra == 1 ? "" : "s") + " the collection log does not show");
+		}
+		String text = parts.isEmpty() ? "" : "Will " + String.join(", ", parts);
 		if (back > 0)
 		{
 			text += (text.isEmpty() ? "" : ". ") + "Will take back " + back + " item" + (back == 1 ? "" : "s") + " an earlier import counted too many times";
@@ -196,7 +216,7 @@ final class HistoryForm extends JPanel
 		{
 			for (HistoryPlanner.KcRow r : rows)
 			{
-				r.on = on && r.to > r.cur;
+				r.on = on && r.changes();
 			}
 			fireTableDataChanged();
 		}
@@ -228,7 +248,7 @@ final class HistoryForm extends JPanel
 		@Override
 		public boolean isCellEditable(int r, int c)
 		{
-			return c == 0 && rows.get(r).to > rows.get(r).cur;
+			return c == 0 && rows.get(r).changes();
 		}
 
 		@Override
@@ -242,11 +262,11 @@ final class HistoryForm extends JPanel
 				case 1:
 					return row.name;
 				case 2:
-					return Fmt.num(row.to);
+					return Fmt.num(row.shown());
 				case 3:
 					return Fmt.num(row.cur);
 				default:
-					return row.to > row.cur ? "sets the kill count" : row.to == row.cur ? "already the same" : "your ledger is ahead, kept";
+					return result(row);
 			}
 		}
 
@@ -259,12 +279,27 @@ final class HistoryForm extends JPanel
 				fireTableCellUpdated(r, c);
 			}
 		}
+
+		private static String result(HistoryPlanner.KcRow row)
+		{
+			if (row.lower)
+			{
+				// never below the kill of a drop with a kill number
+				return row.to == row.shown() ? "lowers it to the game's" : "lowers it to " + Fmt.num(row.to) + " (a drop's kill)";
+			}
+			if (row.to > row.cur)
+			{
+				// a boss whose other modes the record did not show keeps their kills
+				return row.to == row.shown() ? "sets the kill count" : "sets it to " + Fmt.num(row.to) + " with its other kills";
+			}
+			return row.to == row.cur ? "already the same" : "your ledger is ahead, kept";
+		}
 	}
 
 	@SuppressWarnings("serial")
 	private static final class ItemModel extends AbstractTableModel
 	{
-		private static final String[] COLUMNS = {"", "Item", "Boss", "Owned", "In ledger", "Adds"};
+		private static final String[] COLUMNS = {"", "Item", "Boss", "Owned", "In ledger", "Change"};
 		private final List<HistoryPlanner.ItemRow> rows;
 
 		ItemModel(List<HistoryPlanner.ItemRow> rows)
@@ -328,7 +363,7 @@ final class HistoryForm extends JPanel
 				case 4:
 					return Fmt.num(row.have);
 				default:
-					return row.add > 0 ? "+" + Fmt.num(row.add) : row.remove > 0 ? "-" + Fmt.num(row.remove) : "—";
+					return row.add > 0 ? "+" + Fmt.num(row.add) : row.remove > 0 ? "\u2212" + Fmt.num(row.remove) + (row.extra ? " (fewer in the log)" : "") : "—";
 			}
 		}
 

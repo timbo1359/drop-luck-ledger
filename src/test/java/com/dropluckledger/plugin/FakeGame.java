@@ -27,6 +27,11 @@ public final class FakeGame implements Game
 	public int tick = 1000;
 	public final Map<Skill, Integer> levels = new EnumMap<>(Skill.class);
 	public final Map<Integer, Integer> varbits = new HashMap<>();
+	public final Map<Integer, Integer> varps = new HashMap<>();
+	/**
+	 * Inventory id to item id to how many (inventories the client does not have are left out).
+	 */
+	public final Map<Integer, Map<Integer, Integer>> inventories = new HashMap<>();
 	public boolean members = true;
 	public boolean lootTracker = true;
 
@@ -131,6 +136,19 @@ public final class FakeGame implements Game
 	public int varbit(int id)
 	{
 		return varbits.getOrDefault(id, 0);
+	}
+
+	@Override
+	public int varp(int id)
+	{
+		return varps.getOrDefault(id, 0);
+	}
+
+	@Override
+	public Map<Integer, Integer> inventory(int inventoryId)
+	{
+		Map<Integer, Integer> inv = inventories.get(inventoryId);
+		return inv == null ? null : new HashMap<>(inv);
 	}
 
 	@Override

@@ -18,6 +18,7 @@ import java.util.function.BooleanSupplier;
 import javax.swing.SwingUtilities;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.GameState;
+import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.util.Filepath;
 import net.runelite.http.api.loottracker.LootRecordType;
@@ -45,6 +46,9 @@ public class TrackerHintsTest
 	private static final int BLIGHTED_RESTORE = 24598;
 	private static final int BLIGHTED_MANTA = 24589;
 	private static final int ETHER = 21820;
+	private static final int TWISTED_BOW = 20997;
+	private static final int SCYTHE = 22486;
+	private static final int FANG = 26219;
 
 	@Rule
 	public TemporaryFolder tmp = new TemporaryFolder();
@@ -62,7 +66,8 @@ public class TrackerHintsTest
 			.addItem(RAT_MEAT, "Raw rat meat").addItem(BIG_BONES, "Big bones")
 			.addItem(MOOLETA, "Mooleta").addItem(BANDOS_TASSETS, "Bandos tassets").addItem(SPLINTERS, "Sunfire splinters")
 			.addItem(QUIVER, "Dizana's quiver (uncharged)").addItem(BLIGHTED_RESTORE, "Blighted super restore(4)")
-			.addItem(BLIGHTED_MANTA, "Blighted manta ray").addItem(ETHER, "Revenant ether");
+			.addItem(BLIGHTED_MANTA, "Blighted manta ray").addItem(ETHER, "Revenant ether").addItem(TWISTED_BOW, "Twisted bow")
+			.addItem(SCYTHE, "Scythe of vitur (uncharged)").addItem(FANG, "Osmumten's fang");
 		executor = Executors.newSingleThreadScheduledExecutor();
 		Filepath dir = TestFiles.root(data.toPath()).joinSegment("drop-luck-ledger").rooted();
 		tracker = new Tracker(game, new DropLuckLedgerConfig()
@@ -148,6 +153,43 @@ public class TrackerHintsTest
 	private static int num(Object v)
 	{
 		return ((Number) v).intValue();
+	}
+
+	@Test
+	public void eachRaidsSettingsAreReadAtItsChest()
+	{
+		// Chambers of Xeric: challenge mode from the count, the player's points from the game
+		game.varps.put(VarPlayerID.RAIDS_PLAYERSCORE, 47_500);
+		say("Your completed Chambers of Xeric Challenge Mode count is: <col=ff0000>12</col>.");
+		game.tick += 300; // the chest is looted a few minutes later
+		loot(LootRecordType.EVENT, "Chambers of Xeric", null, TWISTED_BOW, 1, COINS, 10);
+		assertEquals(12, boss("chambers-of-xeric").kc);
+		assertEquals(Integer.valueOf(12), boss("chambers-of-xeric").drops.get(0).kc);
+		assertEquals(1, num(param("chambers-of-xeric", 12, "cm")));
+		assertEquals(47_500, num(param("chambers-of-xeric", 12, "points")));
+		// the raids before keep the usual points until the player sets theirs; the count is of challenge mode raids, so they all were
+		assertEquals(30_000, num(param("chambers-of-xeric", 11, "points")));
+		assertEquals(1, num(param("chambers-of-xeric", 11, "cm")));
+
+		// Theatre of Blood: the mode from the count, the team from the party
+		game.varbits.put(VarbitID.TOB_CLIENT_P0, 1);
+		game.varbits.put(VarbitID.TOB_CLIENT_P1, 2);
+		game.varbits.put(VarbitID.TOB_CLIENT_P2, 1);
+		say("Your completed Theatre of Blood: Hard Mode count is: <col=ff0000>40</col>.");
+		game.tick += 200;
+		loot(LootRecordType.EVENT, "Theatre of Blood", null, SCYTHE, 1);
+		assertEquals("hard", param("theatre-of-blood", 40, "mode"));
+		assertEquals(3, num(param("theatre-of-blood", 40, "team")));
+		assertEquals(4, num(param("theatre-of-blood", 39, "team")));
+		assertEquals(1, boss("theatre-of-blood").copies("Scythe of Vitur (uncharged)")); // the data's spelling of the game's name
+
+		// Tombs of Amascut: the raid level the Loot Tracker gives
+		say("Your completed Tombs of Amascut: Expert Mode count is: <col=ff0000>8</col>.");
+		game.tick += 200;
+		loot(LootRecordType.EVENT, "Tombs of Amascut", new int[] {425, 4, 31_000}, FANG, 1);
+		assertEquals(425, num(param("tombs-of-amascut", 8, "raidLevel")));
+		assertEquals(300, num(param("tombs-of-amascut", 7, "raidLevel")));
+		assertEquals(1, boss("tombs-of-amascut").copies("Osmumten's fang"));
 	}
 
 	@Test
@@ -241,6 +283,8 @@ public class TrackerHintsTest
 		// what the plugin reads must be listed as read (READS), or the player's value for older kills would overwrite it
 		game.varbits.put(VarbitID.BARROWS_KILLED_AHRIM, 1);
 		game.varbits.put(VarbitID.PMOON_BOSS_BLUE_DEAD, 1);
+		game.varbits.put(VarbitID.TOB_CLIENT_P0, 1);
+		game.varps.put(VarPlayerID.RAIDS_PLAYERSCORE, 25_000);
 		say("Wave 7 completed! Wave duration: 3:15.00");
 		java.util.List<Capture.Stack> stacks = java.util.Arrays.asList(new Capture.Stack("Big bones", 1), new Capture.Stack("Raw rat meat", 1));
 		StringBuilder bad = new StringBuilder();
@@ -250,6 +294,7 @@ public class TrackerHintsTest
 			java.util.Set<String> keys = new java.util.TreeSet<>();
 			keys.addAll(tracker.hints(b.id, stacks, null).keySet());
 			keys.addAll(tracker.hints(b.id, stacks, 5).keySet());
+			keys.addAll(tracker.hints(b.id, stacks, new int[] {300, 3, 12_000}).keySet());
 			for (BossIndex.KcLabel kl : tracker.core().index.labels(b.id))
 			{
 				keys.addAll(kl.patch.keySet());
@@ -270,7 +315,8 @@ public class TrackerHintsTest
 			}
 		}
 		assertEquals("", bad.toString());
-		assertEquals("[awakened, blood, blue, brothers, choice, delve, destroy, eclipse, farming, fishing, looted, members, mvp, waves]", all.toString());
+		assertEquals("[awakened, blood, blue, brothers, choice, cm, delve, destroy, eclipse, farming, fishing, looted, members, mode, mvp, points, raidLevel, "
+			+ "team, waves]", all.toString());
 	}
 
 	@Test

@@ -9,7 +9,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Pattern;
 
 /**
  * What the panel shows, worked out away from the Swing thread and handed over finished.  Nothing here changes after it is built.
@@ -138,8 +137,22 @@ final class Views
 		final double chance;
 		final Luck.Label label;
 		final boolean pooled;
+		/**
+		 * For the pieces of a set counted as one line (the Barrows equipment, a moon's set): how many pieces; 0 for one item.
+		 */
+		final int pieces;
+		/**
+		 * The item whose picture the line shows.
+		 */
+		final String icon;
 
 		Rank(String bossId, String where, String item, int got, double expected, double pct, double chance, Luck.Label label, boolean pooled)
+		{
+			this(bossId, where, item, got, expected, pct, chance, label, pooled, 0, item);
+		}
+
+		Rank(String bossId, String where, String item, int got, double expected, double pct, double chance, Luck.Label label, boolean pooled,
+			int pieces, String icon)
 		{
 			this.bossId = bossId;
 			this.where = where;
@@ -150,6 +163,8 @@ final class Views
 			this.chance = chance;
 			this.label = label;
 			this.pooled = pooled;
+			this.pieces = pieces;
+			this.icon = icon;
 		}
 	}
 
@@ -265,63 +280,19 @@ final class Views
 	}
 
 	/**
-	 * How completely the wiki data for a boss was captured.
+	 * The items whose drop rate is not known yet (a new boss, say): shown and counted, but left out of the luck figures.
 	 */
-	static final class Confidence
+	static List<String> unknownRates(Boss b)
 	{
-		final String level;
-		final List<String> unknown;
-		final List<String> inferred;
-		final List<String> gaps;
-
-		Confidence(String level, List<String> unknown, List<String> inferred, List<String> gaps)
-		{
-			this.level = level;
-			this.unknown = unknown;
-			this.inferred = inferred;
-			this.gaps = gaps;
-		}
-	}
-
-	private static final Pattern GAP = Pattern.compile("KNOWN GAP|NOT captured|not modelled|NOT modelled|CAVEAT|unconfirmed|not on page", Pattern.CASE_INSENSITIVE);
-
-	static Confidence confidence(Boss b)
-	{
-		List<String> unknown = new ArrayList<>();
-		List<String> inferred = new ArrayList<>();
+		List<String> out = new ArrayList<>();
 		for (Row r : b.allRows())
 		{
-			if (r.flagged("hidden"))
+			if (!r.flagged("hidden") && "unknown".equals(r.rate) && !out.contains(r.name))
 			{
-				continue;
-			}
-			if ("unknown".equals(r.rate))
-			{
-				unknown.add(r.name);
-			}
-			if (r.flagged("inferred"))
-			{
-				inferred.add(r.name);
+				out.add(r.name);
 			}
 		}
-		List<String> gaps = new ArrayList<>();
-		for (String n : b.notes)
-		{
-			if (GAP.matcher(n).find())
-			{
-				gaps.add(n);
-			}
-		}
-		String level = "high";
-		if (!unknown.isEmpty() || !inferred.isEmpty() || !gaps.isEmpty())
-		{
-			level = "medium";
-		}
-		if (inferred.size() > 5 || unknown.size() > 1)
-		{
-			level = "medium-low";
-		}
-		return new Confidence(level, unknown, inferred, gaps);
+		return out;
 	}
 
 	/**

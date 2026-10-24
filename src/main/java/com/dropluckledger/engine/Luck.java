@@ -168,6 +168,79 @@ public final class Luck
 		return s > 0 ? 1 - y : 1 + y;
 	}
 
+	// ------------------------------------------------------------------ a count taken as Poisson
+
+	/**
+	 * P(X = k) for X ~ Poisson(e).
+	 */
+	static double poissonPmf(int k, double e)
+	{
+		if (!(e > 0))
+		{
+			return k == 0 ? 1 : 0;
+		}
+		return Math.exp(-e + k * Math.log(e) - logFactorial(k));
+	}
+
+	private static double logFactorial(int k)
+	{
+		if (k < 2)
+		{
+			return 0;
+		}
+		if (k < 256)
+		{
+			double s = 0;
+			for (int i = 2; i <= k; i++)
+			{
+				s += Math.log(i);
+			}
+			return s;
+		}
+		double x = k;
+		return x * Math.log(x) - x + 0.5 * Math.log(2 * Math.PI * x) + 1 / (12 * x) - 1 / (360 * x * x * x);
+	}
+
+	/**
+	 * P(X &gt;= m) for X ~ Poisson(e), worked out from the smaller side so that a tiny chance keeps its digits.
+	 */
+	public static double poissonAtLeast(int m, double e)
+	{
+		if (m <= 0)
+		{
+			return 1;
+		}
+		if (!(e > 0))
+		{
+			return 0;
+		}
+		if (m <= e)
+		{
+			double below = 0;
+			for (int k = 0; k < m; k++)
+			{
+				below += poissonPmf(k, e);
+			}
+			return Math.max(0, 1 - below);
+		}
+		double above = 0;
+		double t = poissonPmf(m, e);
+		for (int k = m; t > above * 1e-17 && k < m + 100_000; k++)
+		{
+			above += t;
+			t *= e / (k + 1);
+		}
+		return Math.min(1, above);
+	}
+
+	/**
+	 * The luck percentile of m copies when e are expected, taken as Poisson: P(X &lt; m) + P(X = m) / 2.
+	 */
+	public static double poissonPct(int m, double e)
+	{
+		return Math.max(0, Math.min(1, 1 - poissonAtLeast(m, e) + 0.5 * poissonPmf(m, e)));
+	}
+
 	public static double sumP(List<Run> runs)
 	{
 		double s = 0;
@@ -254,7 +327,7 @@ public final class Luck
 						lits.add(Double.parseDouble(m.group(1)));
 					}
 				}
-				if (ids.contains("owned") && rowName != null)
+				if ((ids.contains("owned") || ids.contains("setowned")) && rowName != null)
 				{
 					dep.ownedNames.add(rowName);
 				}
@@ -293,6 +366,14 @@ public final class Luck
 			if (f != null && !f.isEmpty())
 			{
 				dep.follows.add(f);
+			}
+			if (t.petslot > 0)
+			{
+				// the follow table's rows change once the boss's pet is owned
+				for (Row r : boss.pets)
+				{
+					dep.ownedNames.add(r.name);
+				}
 			}
 			for (Row r : t.items)
 			{
@@ -381,8 +462,19 @@ public final class Luck
 
 	static final class Held
 	{
+		/**
+		 * The kill numbers of the copies that have one, in order.
+		 */
 		final List<Integer> ks = new ArrayList<>();
+		/**
+		 * Those, and the kills given to the copies with no kill number for the chances (see the model), in order.
+		 */
+		final List<Integer> all = new ArrayList<>();
 		int unk;
+		/**
+		 * Copies with no kill number that were given a kill.
+		 */
+		int placed;
 		int total;
 	}
 
@@ -475,7 +567,76 @@ public final class Luck
 			for (Held h : byName.values())
 			{
 				Collections.sort(h.ks);
+				h.all.addAll(h.ks);
 			}
+			placeUnknown();
+		}
+
+		/**
+		 * Copies with no kill number of the items whose copies change a chance (their own next one's, as for the Tombs of Amascut
+		 * thread, or another item's): when they came is not known, yet the chance of every kill depends on it.  Each is given the kill
+		 * at which the copies expected by then (the chances as they were, with the copies given kills so far) first reach the copies
+		 * held plus a half: the usual history for that many copies.  One the expected copies never reach is given the last kill.  The
+		 * kills given are only for the chances: the item's known kills, its dry streak and its count stay as they were.  (A pity row's
+		 * kills since the last copy are not placed this way; no boss uses one.)  Same steps as the web app, for the same figures.
+		 */
+		private void placeUnknown()
+		{
+			List<String> toPlace = new ArrayList<>();
+			for (Map.Entry<String, Held> e : byName.entrySet())
+			{
+				if (e.getValue().unk > 0 && dep.ownedNames.contains(e.getKey()))
+				{
+					toPlace.add(e.getKey());
+				}
+			}
+			if (toPlace.isEmpty())
+			{
+				return;
+			}
+			Collections.sort(toPlace);
+			double[] expected = new double[toPlace.size()];
+			int[] knownSoFar = new int[toPlace.size()];
+			for (int k = 1; k <= K; k++)
+			{
+				int left = 0;
+				for (int i = 0; i < toPlace.size(); i++)
+				{
+					Held o = byName.get(toPlace.get(i));
+					if (o.placed >= o.unk)
+					{
+						continue;
+					}
+					left++;
+					expected[i] += pAt(toPlace.get(i), k);
+					while (knownSoFar[i] < o.ks.size() && o.ks.get(knownSoFar[i]) <= k)
+					{
+						knownSoFar[i]++;
+					}
+					while (o.placed < o.unk && expected[i] >= knownSoFar[i] + o.placed + 0.5)
+					{
+						place(o, k);
+					}
+				}
+				if (left == 0)
+				{
+					break;
+				}
+			}
+			for (String n : toPlace)
+			{
+				Held o = byName.get(n);
+				while (o.placed < o.unk)
+				{
+					place(o, K);
+				}
+			}
+		}
+
+		private static void place(Held o, int k)
+		{
+			o.all.add(lowerBound(o.all, k + 1), k);
+			o.placed++;
 		}
 
 		private int segIdx(int k)
@@ -507,7 +668,7 @@ public final class Luck
 			{
 				return 0;
 			}
-			return lowerBound(o.ks, k) + (k > K ? o.unk : 0);
+			return lowerBound(o.all, k) + (k > K ? o.unk - o.placed : 0);
 		}
 
 		int lastBefore(String name, int k)
@@ -517,8 +678,8 @@ public final class Luck
 			{
 				return 0;
 			}
-			int i = lowerBound(o.ks, k);
-			return i > 0 ? o.ks.get(i - 1) : 0;
+			int i = lowerBound(o.all, k);
+			return i > 0 ? o.all.get(i - 1) : 0;
 		}
 
 		private Set<String> names1(String name)
@@ -667,6 +828,14 @@ public final class Luck
 				for (Row r : rows)
 				{
 					if (dep.ownedNames.contains(r.name))
+					{
+						out.add(r.name);
+					}
+				}
+				if (t.petslot > 0)
+				{
+					// the table changes once the pet is owned
+					for (Row r : boss.pets)
 					{
 						out.add(r.name);
 					}
@@ -854,7 +1023,7 @@ public final class Luck
 					Held o = byName.get(n);
 					if (o != null)
 					{
-						for (int d : o.ks)
+						for (int d : o.all)
 						{
 							if (d + 1 > from && d + 1 <= to)
 							{
@@ -880,7 +1049,7 @@ public final class Luck
 				ds.add(0);
 				if (o != null)
 				{
-					ds.addAll(o.ks);
+					ds.addAll(o.all);
 				}
 				for (int d : ds)
 				{
@@ -1062,6 +1231,48 @@ public final class Luck
 		return null;
 	}
 
+	/**
+	 * True when the item's no-duplicate group is a "once" group: no protection once every item of it has been received.
+	 */
+	static boolean nodupOnce(Model m, String name)
+	{
+		for (Map.Entry<String, Set<String>> e : m.dep.nodupGroups.entrySet())
+		{
+			if (e.getValue().contains(name))
+			{
+				return Engine.onceGroup(e.getKey());
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * The chances of all items of a "once" group after the set is complete: every item rolls at its own chance.
+	 */
+	private static double[] doneProbs(Model m, List<String> group, int[] counts, int k)
+	{
+		Map<String, Integer> c = new HashMap<>();
+		for (int i = 0; i < group.size(); i++)
+		{
+			c.put(group.get(i), Math.max(1, counts == null ? 1 : counts[i]));
+		}
+		return m.pAtGroup(group, k, c);
+	}
+
+	/**
+	 * The state that follows when item j of a no-duplicate group drops: it leaves the items at the fewest copies, and when none are left
+	 * all of them are again (or, for a "once" group, the set is complete).
+	 */
+	private static int nextState(int s, int j, int full, int done, boolean once)
+	{
+		if (s == done)
+		{
+			return done;
+		}
+		int s2 = s & ~(1 << j);
+		return s2 != 0 ? s2 : once ? done : full;
+	}
+
 	static final int NODUP_LIMIT = 200_000;
 
 	/**
@@ -1089,11 +1300,13 @@ public final class Luck
 	 * copies held the fewest of can drop, so an item that cannot drop now can once the others have.  The group's state (which items
 	 * are at the fewest copies) is followed kill by kill.
 	 */
-	static void nodupForward(Model m, String x, List<String> group, int K, int[] windows, double[] cs, ItemAnalysis out)
+	static void nodupForward(Model m, String x, List<String> group, int K, int[] windows, double[] cs, ItemAnalysis out, boolean once)
 	{
 		int n = group.size();
 		int xi = group.indexOf(x);
 		int full = (1 << n) - 1;
+		// a "once" group whose set is complete: no item is held back any more
+		final int done = full + 1;
 		int mn = Integer.MAX_VALUE;
 		int[] c0 = new int[n];
 		for (int i = 0; i < n; i++)
@@ -1108,6 +1321,10 @@ public final class Luck
 			{
 				s0 |= 1 << i;
 			}
+		}
+		if (once && mn >= 1)
+		{
+			s0 = done;
 		}
 		Map<Integer, Double> dist = new HashMap<>();
 		dist.put(s0, 1.0);
@@ -1143,7 +1360,7 @@ public final class Luck
 				double[] p = byS.get(s);
 				if (p == null)
 				{
-					p = stateProbs(m, group, mn, s, k);
+					p = s == done ? doneProbs(m, group, c0, k) : stateProbs(m, group, mn, s, k);
 					byS.put(s, p);
 				}
 				double tot = 0;
@@ -1162,12 +1379,7 @@ public final class Luck
 					{
 						continue;
 					}
-					int s2 = s & ~(1 << j);
-					if (s2 == 0)
-					{
-						s2 = full;
-					}
-					nd.merge(s2, q * p[j], Double::sum);
+					nd.merge(nextState(s, j, full, done, once), q * p[j], Double::sum);
 				}
 			}
 			dist = nd;
@@ -1206,11 +1418,13 @@ public final class Luck
 	 *
 	 * @return P(at least n copies) for n = 0..cap, then the expected copies
 	 */
-	static double[] nodupCareer(Model m, String x, List<String> group, int K, int cap)
+	static double[] nodupCareer(Model m, String x, List<String> group, int K, int cap, boolean once)
 	{
 		int n = group.size();
 		int xi = group.indexOf(x);
 		int full = (1 << n) - 1;
+		// a "once" group whose set is complete: no item is held back any more
+		final int done = full + 1;
 		int w = cap + 1;
 		Map<Integer, Double> dist = new HashMap<>();
 		dist.put(full * w, 1.0);
@@ -1234,7 +1448,7 @@ public final class Luck
 				double[] p = byS.get(s);
 				if (p == null)
 				{
-					p = stateProbs(m, group, 0, s, k);
+					p = s == done ? doneProbs(m, group, null, k) : stateProbs(m, group, 0, s, k);
 					byS.put(s, p);
 				}
 				double tot = 0;
@@ -1253,12 +1467,7 @@ public final class Luck
 					{
 						continue;
 					}
-					int s2 = s & ~(1 << j);
-					if (s2 == 0)
-					{
-						s2 = full;
-					}
-					nd.merge(s2 * w + (j == xi ? Math.min(cap, c + 1) : c), q * p[j], Double::sum);
+					nd.merge(nextState(s, j, full, done, once) * w + (j == xi ? Math.min(cap, c + 1) : c), q * p[j], Double::sum);
 				}
 			}
 			dist = nd;
@@ -1382,7 +1591,7 @@ public final class Luck
 			java.util.function.IntToDoubleFunction ge = mm -> mm <= 0 ? 1 : atLeast((int) needHits.applyAsDouble(mm), allRuns);
 			if (grp != null && !out.once)
 			{
-				final double[] c = nodupCareer(m, name, grp, K, O + 1);
+				final double[] c = nodupCareer(m, name, grp, K, O + 1, nodupOnce(m, name));
 				final int cap = O + 1;
 				ge = mm -> mm <= 0 ? 1 : mm <= cap ? c[mm] : 0;
 				out.pct = 1 - 0.5 * (ge.applyAsDouble(O) + ge.applyAsDouble(O + 1));
@@ -1440,7 +1649,7 @@ public final class Luck
 		// forward looking
 		if (grp != null && !out.collected)
 		{
-			nodupForward(m, name, grp, K, new int[] {win, 10, 100, 500, 1000}, new double[] {0.5, 0.9, 0.99}, out);
+			nodupForward(m, name, grp, K, new int[] {win, 10, 100, 500, 1000}, new double[] {0.5, 0.9, 0.99}, out, nodupOnce(m, name));
 		}
 		else if (!out.collected)
 		{

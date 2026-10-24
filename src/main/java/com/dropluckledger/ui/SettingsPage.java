@@ -61,8 +61,8 @@ final class SettingsPage extends Column
 		add(bossesToShow());
 
 		Column history = new Column(4);
-		history.add(Look.wrapped("<b>Game history</b><br>Reads your kill counts and collection log from the game and shows you what it would add before it adds anything. "
-			+ "Open your Boss Kill Log (Adventure Log) and your Collection Log pages in game first, so the plugin can read them.", Look.PAGE_TEXT, Look.small(), Look.TEXT));
+		history.add(Look.wrapped("<b>Game history</b><br>Brings in the kill counts and loot RuneLite's own plugins saved, after showing you what it would add. "
+			+ "Your Boss Kill Log (Adventure Log) and Collection Log pages are checked as you open them in game.", Look.PAGE_TEXT, Look.small(), Look.TEXT));
 		JButton h = Look.button("Add my game history…");
 		h.addActionListener(e -> ctx.reviewHistory());
 		history.add(h);
@@ -264,7 +264,8 @@ final class SettingsPage extends Column
 	private void wipe()
 	{
 		if (!ctx.dialogs().confirm(ctx.window(), "Erase everything",
-			"This removes every kill count and drop from your ledger. Export a backup first if you might want them back.", "Erase everything"))
+			"This removes every kill count and drop from your ledger, and the plugin's log of every drop. Export a backup first if you might "
+				+ "want them back.", "Erase everything"))
 		{
 			return;
 		}
@@ -279,6 +280,7 @@ final class SettingsPage extends Column
 			p.hiddenBosses = keep.hiddenBosses;
 		});
 		ctx.host().replaceLedger(fresh);
+		ctx.host().eraseDropLog();
 		ctx.notice("Ledger erased");
 	}
 

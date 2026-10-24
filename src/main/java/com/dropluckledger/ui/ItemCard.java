@@ -122,6 +122,28 @@ final class ItemCard extends Column
 			return;
 		}
 
+		if (rateUnknown(v))
+		{
+			// recorded like any other item, but there is no rate to compare the copies with yet
+			add(top(ctx, v, "\u2014", Look.MUTED, Look.CARD_TEXT));
+			add(Look.label("rate not published yet \u00b7 " + a.O + " received", Look.small(), Look.MUTED));
+			if (open)
+			{
+				if (a.K > 0)
+				{
+					add(Look.kv(Look.CARD_TEXT, unknownFacts(a)));
+				}
+				if (v.meta.note != null && !v.meta.note.isEmpty())
+				{
+					add(Look.wrapped(Look.esc(v.meta.note), Look.CARD_TEXT, Look.small(), Look.MUTED));
+				}
+				add(footer());
+			}
+			setToolTipText(unknownTip(v));
+			Look.clickable(this, () -> actions.toggle(v.name));
+			return;
+		}
+
 		final Figures f = new Figures(v);
 		final boolean done = a.collected;
 		final double chance = f.chance();
@@ -253,6 +275,52 @@ final class ItemCard extends Column
 	// ------------------------------------------------------------------ the words
 
 	/**
+	 * True when the item's drop rate is not published yet (a new raid, say): no chance or luck can be worked out for it.
+	 */
+	static boolean rateUnknown(Views.ItemView v)
+	{
+		return v.meta != null && v.meta.rateUnknown();
+	}
+
+	private static String unknownTip(Views.ItemView v)
+	{
+		Luck.ItemAnalysis a = v.a;
+		StringBuilder b = new StringBuilder("<b>").append(Look.esc(v.name)).append("</b> ").append(Look.dim(Look.esc(tagsOf(v))));
+		b.append("<br>Its drop rate is not published yet, so no chance or luck is worked out for it. Your copies and the kills they came on "
+			+ "are recorded, and count once the rate is known.");
+		if (a.K == 0)
+		{
+			return Look.tip(b.toString());
+		}
+		b.append("<br>Received ").append(a.O).append(" over ").append(Fmt.num(a.K)).append(" kills");
+		if (!a.streakKnown)
+		{
+			b.append("<br>Dry streak: not known, because your last copy has no kill number.");
+		}
+		else if (a.O > 0 && a.streakFrom > 0)
+		{
+			b.append("<br>Dry streak: ").append(Fmt.num(a.streak)).append(" kills since your last, at kill ").append(Fmt.num(a.streakFrom));
+		}
+		else
+		{
+			b.append("<br>Dry streak: ").append(Fmt.num(a.streak)).append(" kills without one");
+		}
+		return Look.tip(b.toString());
+	}
+
+	private static List<String[]> unknownFacts(Luck.ItemAnalysis a)
+	{
+		List<String[]> rows = new ArrayList<>();
+		rows.add(new String[] {"Per kill here", "not published yet"});
+		rows.add(new String[] {"Received", a.O + " in " + Fmt.num(a.K) + " kills"});
+		if (a.streakKnown)
+		{
+			rows.add(new String[] {"Dry streak", Fmt.num(a.streak) + " kills"});
+		}
+		return rows;
+	}
+
+	/**
 	 * Whether anyone can say how long ago the last copy was.  For an item pooled over several bosses that is the pool's streak.
 	 */
 	private static boolean streakKnown(Views.ItemView v)
@@ -321,7 +389,7 @@ final class ItemCard extends Column
 			b.append("<br>Set your kill count to see how lucky you are.");
 			return Look.tip(b.toString());
 		}
-		b.append("<br><b>").append(Fmt.pct(f.chance())).append("</b> chance of ").append(f.got > 0 ? "copy " + (f.got + 1) : "one")
+		b.append("<br><b>").append(Fmt.pctHtml(f.chance())).append("</b> chance of ").append(f.got > 0 ? "copy " + (f.got + 1) : "one")
 			.append(" by now, from all your kills at the drop rate. ").append(Look.dim("Kills past the rate carry over to the next one."));
 		b.append("<br>Per kill here: ").append(Look.esc(rateOf(v)));
 		if (v.pool != null)
@@ -338,12 +406,12 @@ final class ItemCard extends Column
 		if (f.known())
 		{
 			b.append("<br>Luck: ").append(Look.colored("<b>" + Look.esc(f.label.text) + "</b>", Look.luck(f.label.key))).append(" · luckier than ")
-				.append(Fmt.pct(f.pct)).append(" of players with the same kills");
+				.append(Fmt.pctHtml(f.pct)).append(" of players with the same kills");
 		}
 		Double cum = v.pool != null ? (Double) v.pool.cum : a.cum;
 		if (cum != null)
 		{
-			b.append("<br>Chance of 1+ in all those kills: ").append(Fmt.pct(cum));
+			b.append("<br>Chance of 1+ in all those kills: ").append(Fmt.pctHtml(cum));
 		}
 		b.append("<br>").append(streakLine(v));
 		b.append("<br>").append(Look.dim("Click for more"));
@@ -357,7 +425,7 @@ final class ItemCard extends Column
 		{
 			Luck.Pool p = v.pool;
 			return p.streakKnown
-				? "Dry streak over all these bosses: " + Fmt.num(p.streak) + " kills since your last (" + Fmt.pct(p.meter) + " would have had another)"
+				? "Dry streak over all these bosses: " + Fmt.num(p.streak) + " kills since your last (" + Fmt.pctHtml(p.meter) + " would have had another)"
 				: "Dry streak: not known, because your last copy has no kill number.";
 		}
 		if (!a.streakKnown)
@@ -366,9 +434,9 @@ final class ItemCard extends Column
 		}
 		if (a.O > 0 && a.streakFrom > 0)
 		{
-			return "Dry streak: " + Fmt.num(a.streak) + " kills since your last, at kill " + Fmt.num(a.streakFrom) + " (" + Fmt.pct(a.meter) + " would have had another)";
+			return "Dry streak: " + Fmt.num(a.streak) + " kills since your last, at kill " + Fmt.num(a.streakFrom) + " (" + Fmt.pctHtml(a.meter) + " would have had another)";
 		}
-		return "Dry streak: " + Fmt.num(a.streak) + " kills without one (" + Fmt.pct(a.meter) + " would have had one)";
+		return "Dry streak: " + Fmt.num(a.streak) + " kills without one (" + Fmt.pctHtml(a.meter) + " would have had one)";
 	}
 
 	private static String perBoss(Luck.Pool p)
@@ -427,7 +495,7 @@ final class ItemCard extends Column
 	private static JLabel pooled(Luck.Pool p)
 	{
 		String m = "<b>Pooled across " + p.per.size() + " bosses</b><br>" + Look.esc(perBoss(p)) + "<br>" + p.O + " received vs " + Fmt.expected(p.expected)
-			+ " expected · " + Look.colored(Look.esc(p.label.text), Look.luck(p.label.key)) + ", luckier than " + Fmt.pct(p.pct) + " of players";
+			+ " expected · " + Look.colored(Look.esc(p.label.text), Look.luck(p.label.key)) + ", luckier than " + Fmt.pctHtml(p.pct) + " of players";
 		return Look.wrapped(m, Look.CARD_TEXT, Look.small(), Look.TEXT);
 	}
 

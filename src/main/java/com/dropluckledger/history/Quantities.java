@@ -67,6 +67,33 @@ public final class Quantities
 	}
 
 	/**
+	 * True when the boss always drops the item one at a time: every row of it on the drop tables gives exactly one.  The game's
+	 * count of such an item is the number of times it dropped, with nothing estimated.
+	 */
+	public static boolean oneAtATime(Boss boss, String item)
+	{
+		boolean found = false;
+		for (Row r : boss.allRows())
+		{
+			if (!item.equals(r.name))
+			{
+				continue;
+			}
+			found = true;
+			String q = r.qty == null ? "1" : r.qty.trim();
+			if (q.endsWith("n"))
+			{
+				q = q.substring(0, q.length() - 1).trim(); // noted
+			}
+			if (!q.isEmpty() && !q.equals("1"))
+			{
+				return false;
+			}
+		}
+		return found;
+	}
+
+	/**
 	 * The amount a drop-table cell stands for: "3" is 3, "35-40" is 37.5, "11;17" (without and with a perfect kill) is 11, the
 	 * trailing "n" of a noted item and the thousands separators are ignored.  Null when there is no amount.
 	 */

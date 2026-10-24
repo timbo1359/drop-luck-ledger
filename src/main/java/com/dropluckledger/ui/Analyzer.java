@@ -349,10 +349,20 @@ final class Analyzer
 			List<String> names = ledger.trackedNames(id);
 			if (st.kc > 0)
 			{
+				// the pieces of a set (the Barrows equipment, a moon's set) are one line: with many rare pieces one of them is bound to
+				// come early, so the set's luck is all its pieces against all the pieces expected
+				Map<String, SetTotal> sets = new LinkedHashMap<>();
+				Map<String, ItemMeta> meta = boss.meta();
 				for (String n : names)
 				{
 					Luck.ItemAnalysis a = analysis(id, rev, n, window);
-					if (a == null || a.collected || !(a.pNext > 0))
+					ItemMeta im = meta.get(n);
+					if (a != null && im != null && im.group != null && a.expected != null && !shared(n))
+					{
+						sets.computeIfAbsent(im.group, g -> new SetTotal()).add(n, a.O, a.expected);
+						continue;
+					}
+					if (a == null || a.collected || !(a.pNext > 0) || im != null && im.noSpoon)
 					{
 						continue;
 					}
@@ -372,6 +382,16 @@ final class Analyzer
 					if (icons != null)
 					{
 						icons.id(n);
+					}
+				}
+				for (Map.Entry<String, SetTotal> e : sets.entrySet())
+				{
+					SetTotal t = e.getValue();
+					if (t.expected > 0)
+					{
+						double pct = Luck.poissonPct(t.got, t.expected);
+						rows.add(new Views.Rank(id, boss.name, e.getKey(), t.got, t.expected, pct, Luck.poissonAtLeast(t.got + 1, t.expected),
+							Luck.luckLabel(pct), false, t.pieces, t.icon));
 					}
 				}
 			}
@@ -430,6 +450,29 @@ final class Analyzer
 	}
 
 	/**
+	 * The pieces of a set added up: the copies received, the copies expected, and the piece whose picture stands for the set (the
+	 * first one received).
+	 */
+	private static final class SetTotal
+	{
+		int got;
+		double expected;
+		int pieces;
+		String icon;
+
+		void add(String item, int copies, double e)
+		{
+			if (icon == null || got == 0 && copies > 0)
+			{
+				icon = item;
+			}
+			got += copies;
+			expected += e;
+			pieces++;
+		}
+	}
+
+	/**
 	 * A ranking line for an item pooled over several bosses; it opens the shown boss the player has the most kills at.
 	 */
 	private static Views.Rank rankOf(Luck.Pool p, Set<String> hidden)
@@ -482,6 +525,19 @@ final class Analyzer
 			{
 				icons.id(n);
 			}
+		}
+		// a tertiary or a pet whose rate is not published yet never rolls, but it is listed with the rest
+		for (Map.Entry<String, ItemMeta> e : meta.entrySet())
+		{
+			String n = e.getKey();
+			ItemMeta m = e.getValue();
+			if (m.hidden || !m.rateUnknown() || probs.containsKey(n))
+			{
+				continue;
+			}
+			Views.RowInfo ri = info.get(n);
+			rows.add(new Views.TableRow(n, 0, ri == null ? "" : ri.qty, ri == null ? new ArrayList<String>() : ri.rates,
+				ri == null ? new ArrayList<String>() : ri.where, logNames.contains(n), m.isUnique() || m.isPet() || logNames.contains(n)));
 		}
 		rows.sort(Comparator.comparingDouble((Views.TableRow r) -> r.p).reversed());
 		return new Views.TableView(id, boss.always, rows);
